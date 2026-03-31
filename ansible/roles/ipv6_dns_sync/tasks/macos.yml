@@ -123,32 +123,6 @@
   when: xcode_clt.rc != 0
 
 # =============================================================================
-# DEPENDENCIES
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# Install nsupdate via Homebrew
-# -----------------------------------------------------------------------------
-# nsupdate is the tool that sends DNS update requests to the DNS server.
-# On macOS it comes as part of the "bind" Homebrew package.
-# Homebrew must be installed first via scripts/bootstrap-macos.sh.
-# We check that brew is available and fail with a helpful message if not.
-
-- name: Check Homebrew is installed
-  command: /opt/homebrew/bin/brew --version
-  register: brew_check
-  changed_when: false
-  failed_when: brew_check.rc != 0
-
-- name: Install nsupdate (via Homebrew bind)
-  # Use command instead of community.general.homebrew module — the module
-  # has compatibility issues with newer macOS/Homebrew versions.
-  command: /opt/homebrew/bin/brew install bind
-  register: brew_install
-  changed_when: "'Already installed' not in brew_install.stdout"
-  failed_when: brew_install.rc != 0
-
-# =============================================================================
 # PYTHON VIRTUAL ENVIRONMENT
 # =============================================================================
 # The macOS watcher script (ipv6_dns_watch_macos.py) uses two Python modules
