@@ -27,8 +27,16 @@
 set -e
 
 echo "==> Checking if Homebrew is already installed..."
+# Check both common Homebrew paths since it may not be in PATH during
+# non-interactive SSH sessions
 if command -v brew &>/dev/null; then
     echo "==> Homebrew already installed at $(command -v brew), skipping."
+elif [ -x /opt/homebrew/bin/brew ]; then
+    echo "==> Homebrew already installed at /opt/homebrew/bin/brew, skipping."
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    echo "==> Homebrew already installed at /usr/local/bin/brew, skipping."
+    eval "$(/usr/local/bin/brew shellenv)"
 else
     echo "==> Installing Homebrew (this will also install Xcode Command Line Tools)..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -40,7 +48,14 @@ else
 fi
 
 echo "==> Installing Python 3 via Homebrew..."
-brew install python3
+# Use full path in case brew isn't in PATH yet
+if command -v brew &>/dev/null; then
+    brew install python3
+elif [ -x /opt/homebrew/bin/brew ]; then
+    /opt/homebrew/bin/brew install python3
+else
+    /usr/local/bin/brew install python3
+fi
 
 echo ""
 echo "==> Bootstrap complete!"
