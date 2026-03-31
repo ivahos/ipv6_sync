@@ -185,6 +185,9 @@ def main():
     src = SCDynamicStoreCreateRunLoopSource(None, store, 0)
     CFRunLoopAddSource(rl, src, kCFRunLoopDefaultMode)
 
+    # Log startup so we can clearly see each time the watcher starts
+    log("starting up")
+
     # Do an initial sync on startup, so DNS matches current IPs
     run_sync()
 
