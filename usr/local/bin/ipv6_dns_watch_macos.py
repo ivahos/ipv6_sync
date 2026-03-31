@@ -1,4 +1,4 @@
-#!/Users/ivar/.venv/ipv6-dns-sync/bin/python3
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Ivar Hogstad
 # This program is free software: you can redistribute it and/or modify
@@ -8,17 +8,21 @@
 # See LICENSE file in the project root or <https://www.gnu.org/licenses/>.
 
 """
-ipv6_dns_watch.py — macOS IPv6 change watcher
+ipv6_dns_watch_macos.py — macOS IPv6 change watcher
 
 Listens to SystemConfiguration dynamic store notifications for IPv6
 changes and runs ipv6_dns_sync.py whenever addresses change.
 
+On shutdown, launchd sends SIGTERM to all daemons. We catch this signal
+and run the sync script with --shutdown to remove all AAAA and PTR records
+before the process exits, preventing stale DNS records.
+
 Requires:
   - /usr/local/bin/ipv6_dns_sync.py
-  - /usr/local/etc/ipv6_dns_sync.json
 """
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -31,8 +35,9 @@ from SystemConfiguration import (
 from CoreFoundation import (
     CFRunLoopGetCurrent,
     CFRunLoopAddSource,
-    CFRunLoopRun,
+    CFRunLoopStop,
     kCFRunLoopDefaultMode,
+    CFRunLoopRun,
 )
 
 SYNC_SCRIPT = "/usr/local/bin/ipv6_dns_sync.py"
@@ -60,6 +65,39 @@ def run_sync():
         sys.stderr.write(f"[ipv6_dns_watch] sync failed: {e}\n")
 
 
+def run_shutdown():
+    """
+    Run the sync script with --shutdown to remove all DNS records.
+    Called when SIGTERM is received (i.e. on system shutdown or service stop).
+
+    launchd sends SIGTERM to all daemons during shutdown. By catching it here
+    and running the cleanup before exiting, we ensure DNS is left in a clean
+    state — no dangling AAAA records that would cause connectivity delays
+    when the machine comes back up or another host tries to reach this one.
+    """
+    sys.stderr.write("[ipv6_dns_watch] SIGTERM received — running shutdown cleanup\n")
+    try:
+        subprocess.run(
+            [SYNC_SCRIPT, "--config-url", CONFIG_PATH, "--shutdown"],
+            check=False,
+            timeout=25,  # launchd's default ExitTimeout is 5s but we set 30s in plist
+        )
+    except Exception as e:
+        sys.stderr.write(f"[ipv6_dns_watch] shutdown cleanup failed: {e}\n")
+    sys.stderr.write("[ipv6_dns_watch] shutdown cleanup complete\n")
+
+
+def handle_sigterm(signum, frame):
+    """
+    SIGTERM handler — stop the CFRunLoop so main() can run cleanup and exit.
+    We stop the run loop rather than calling sys.exit() directly so that
+    any cleanup code after CFRunLoopRun() in main() gets a chance to run.
+    """
+    run_shutdown()
+    # Stop the CFRunLoop so CFRunLoopRun() returns and main() can exit cleanly
+    CFRunLoopStop(CFRunLoopGetCurrent())
+
+
 def callback(store, changed_keys, info):
     # changed_keys is a CFArray of keys that changed
     try:
@@ -70,6 +108,9 @@ def callback(store, changed_keys, info):
 
 
 def main():
+    # Register SIGTERM handler so we clean up DNS records on shutdown
+    signal.signal(signal.SIGTERM, handle_sigterm)
+
     # Create a dynamic store with our callback
     store = SCDynamicStoreCreate(
         None,
@@ -94,7 +135,8 @@ def main():
     # Do an initial sync on startup, so DNS matches current IPs
     run_sync()
 
-    # Block here and handle events forever
+    # Block here and handle events forever.
+    # CFRunLoopRun() returns when CFRunLoopStop() is called (i.e. on SIGTERM).
     CFRunLoopRun()
 
 
@@ -102,7 +144,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        pass
+        run_shutdown()
     except Exception as e:
         sys.stderr.write(f"[ipv6_dns_watch] fatal error: {e}\n")
         sys.exit(1)

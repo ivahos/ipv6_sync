@@ -28,5 +28,10 @@
 
     <key>StandardErrorPath</key>
     <string>/var/log/ipv6_dns_watch.err.log</string>
+
+    <!-- Give the watcher enough time to complete DNS cleanup on shutdown
+         before launchd forcibly kills it. -->
+    <key>ExitTimeout</key>
+    <integer>30</integer>
 </dict>
 </plist>
