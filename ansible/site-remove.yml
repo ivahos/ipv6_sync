@@ -12,15 +12,17 @@
 #
 # Usage:
 #   Remove from a single host:
-#     ansible-playbook site-remove.yml --limit myhostname
+#     ansible-playbook ansible/site-remove.yml --limit myhostname
 #
 #   Dry run (show what would be removed without actually removing anything):
-#     ansible-playbook site-remove.yml --limit myhostname --check
+#     ansible-playbook ansible/site-remove.yml --limit myhostname --check
 
 - name: Remove ipv6_dns_sync
   hosts: all
   become: true
 
-  roles:
-    - role: ipv6_dns_sync
-      tasks_from: remove.yml
+  tasks:
+    - name: Include remove tasks
+      include_role:
+        name: ipv6_dns_sync
+        tasks_from: remove.yml
