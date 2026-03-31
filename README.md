@@ -76,6 +76,9 @@ key "keyname" {
 ├── docs/
 │   └── config.json                # Reference config (no secrets)
 │
+├── scripts/
+│   └── bootstrap-macos.sh         # Homebrew + Python bootstrap (called by Ansible)
+│
 └── ansible/                       # Automated deployment (see below)
 ```
 
@@ -92,29 +95,30 @@ The `ansible/` directory contains a playbook that deploys everything to any numb
 1. Install Ansible on your local machine:
    ```bash
    pip install ansible
-   ansible-galaxy collection install community.general  # needed for macOS targets
    ```
 
 2. Clone this repo:
    ```bash
    git clone https://github.com/ivahos/ipv6_sync.git
-   cd ipv6_sync/ansible
+   cd ipv6_sync
    ```
 
-3. Add your hosts to `inventory/hosts.yml`
+3. Add your hosts to `ansible/inventory/hosts.yml`
 
 4. Create a file for each host with its TSIG key:
    ```bash
-   mkdir -p inventory/host_vars
-   echo 'ipv6_tsig_key: "your-actual-tsig-key"' > inventory/host_vars/<hostname>.yml
+   mkdir -p ansible/inventory/host_vars
+   echo 'ipv6_tsig_key: "your-actual-tsig-key"' > ansible/inventory/host_vars/<hostname>.yml
    ```
 
 5. Run the playbook:
    ```bash
-   ansible-playbook -i inventory/hosts.yml site.yml
+   ansible-playbook ansible/site.yml --limit myhostname
    ```
 
-The playbook handles everything: installing dependencies (`nsupdate`), deploying scripts, creating the Python venv on macOS, writing the TSIG key file, and enabling the service.
+The playbook handles everything automatically per platform:
+- **Linux**: installs `bind9-dnsutils`, deploys scripts, enables systemd service
+- **macOS**: installs Homebrew + Xcode CLT + Python 3, creates Python venv with PyObjC, deploys scripts, loads launchd daemon
 
 ---
 
@@ -149,8 +153,11 @@ systemctl enable --now ipv6-dns-watch
 #### macOS
 
 ```bash
-# Install nsupdate (requires Homebrew)
-brew install bind
+# Install Homebrew (also installs Xcode Command Line Tools)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install Python 3
+brew install python3
 
 # Deploy scripts
 cp usr/local/bin/ipv6_dns_sync.py /usr/local/bin/
@@ -159,20 +166,21 @@ chmod +x /usr/local/bin/ipv6_dns_sync.py /usr/local/bin/ipv6_dns_watch_macos.py
 
 # Create Python venv and install required PyObjC packages
 python3 -m venv /opt/ipv6-dns-sync/venv
-/opt/ipv6-dns-sync/venv/bin/pip install pyobjc-framework-SystemConfiguration pyobjc-framework-CoreFoundation
+/opt/ipv6-dns-sync/venv/bin/pip install pyobjc
 
 # Deploy launchd plist
-cp Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist /Library/LaunchDaemons/
+# Note: edit the plist first to set the correct venv Python path
+sudo cp Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist /Library/LaunchDaemons/
 
 # Write the TSIG key
-install -m 600 /dev/null /var/root/.mykey
+sudo install -m 600 /dev/null /var/root/.mykey
 # Edit /var/root/.mykey and add your key in BIND format (see above)
 
 # Create cache directory
-mkdir -p /var/root/.cache/ipv6_dns_sync
+sudo mkdir -p /var/root/.cache/ipv6_dns_sync
 
 # Load the service
-launchctl load -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
 ```
 
 ---
@@ -186,19 +194,19 @@ Check the watcher is running:
 systemctl status ipv6-dns-watch
 
 # macOS
-launchctl list | grep ipv6
+sudo launchctl print system/au.hosteng.ipv6-dns-watch
 ```
 
 Run the sync script manually in verbose mode to see what it would do:
 
 ```bash
-ipv6_dns_sync.py --config-url https://a02.au/ipv6_sync_config/config.json -v
+sudo /usr/local/bin/ipv6_dns_sync.py --config-url https://your-config-url/config.json -v
 ```
 
 Or in preview mode (no DNS changes made):
 
 ```bash
-ipv6_dns_sync.py --config-url https://a02.au/ipv6_sync_config/config.json --preview
+sudo /usr/local/bin/ipv6_dns_sync.py --config-url https://your-config-url/config.json --preview
 ```
 
 ---

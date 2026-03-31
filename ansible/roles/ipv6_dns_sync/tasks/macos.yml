@@ -39,14 +39,12 @@
 # =============================================================================
 # XCODE COMMAND LINE TOOLS
 # =============================================================================
-# On macOS, /usr/bin/python3 is a stub — it does nothing until Xcode Command
-# Line Tools (CLT) are installed, at which point it becomes a real Python 3
-# interpreter. We need it to create the Python venv for the watcher script.
+# Homebrew (installed in Stage 1 of site.yml) normally handles CLT installation
+# automatically. These tasks are a safety net for cases where CLT may still
+# be missing after the bootstrap — for example if Homebrew was already
+# installed but CLT was not.
 #
-# Normally installing CLT triggers a GUI popup which requires someone to
-# click through it — not useful for automation. The trick below (also used
-# by Homebrew) suppresses the GUI and installs CLT silently via
-# softwareupdate, the same tool used for macOS system updates.
+# If CLT is already installed all tasks in this section are skipped.
 
 # -----------------------------------------------------------------------------
 # Check if CLT is already installed
@@ -259,16 +257,16 @@
 # -----------------------------------------------------------------------------
 # Load the launchd service
 # -----------------------------------------------------------------------------
-# "launchctl load -w" loads the plist and starts the daemon immediately,
-# and also marks it to start automatically at boot.
+# Uses the modern launchctl bootstrap/bootout commands instead of the
+# deprecated load/unload. bootstrap starts the service and registers it
+# with launchd to start at boot. bootout first ensures a clean state in
+# case the plist was previously loaded without the service running properly.
 #
-# "creates: ..." is used as a rough idempotency guard to skip this task if
-# the service appears to already be running. Note: launchctl exits non-zero
-# if the service is already loaded, so "ignore_errors: true" prevents that
-# from being treated as a failure.
+# "|| true" after bootout means don't fail if the service isn't loaded yet
+# (e.g. on a fresh install). ignore_errors handles any other edge cases.
 
 - name: Ensure launchd service is loaded
-  command: launchctl load -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
-  args:
-    creates: /var/run/au.hosteng.ipv6-dns-watch.pid
+  shell: |
+    launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
   ignore_errors: true
