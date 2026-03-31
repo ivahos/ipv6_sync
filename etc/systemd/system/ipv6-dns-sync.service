@@ -1,0 +1,16 @@
+[Unit]
+Description=Sync IPv6 AAAA/PTR records via nsupdate
+Documentation=man:nsupdate(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ipv6_dns_sync_linux.py --config /usr/local/etc/ipv6_dns_sync.json
+User=root
+Group=root
+Nice=10
+StandardOutput=append:/var/log/ipv6_sync.out
+StandardError=append:/var/log/ipv6_sync.err
+# (IMPORTANT: removed the ExecStartPre line)
+# No ExecStartPre here
