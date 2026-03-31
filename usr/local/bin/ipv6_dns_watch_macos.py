@@ -145,10 +145,11 @@ def handle_sigterm(signum, frame):
     except Exception as e:
         log(f"network check failed: {e}")
 
-    # Stop the CFRunLoop so CFRunLoopRun() returns and main() can exit cleanly
+    # Stop the CFRunLoop so CFRunLoopRun() returns and main() exits naturally.
+    # Do NOT call sys.exit() here — letting the process exit via normal return
+    # from main() gives launchd a clean lifecycle so it sends SIGTERM properly
+    # on subsequent shutdowns rather than jumping straight to SIGKILL.
     CFRunLoopStop(CFRunLoopGetCurrent())
-    # Exit immediately after cleanup — don't process any more events
-    sys.exit(0)
 
 
 def callback(store, changed_keys, info):
