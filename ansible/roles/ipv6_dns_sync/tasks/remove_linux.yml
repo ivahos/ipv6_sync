@@ -2,18 +2,18 @@
 # =============================================================================
 # tasks/remove_linux.yml — Remove ipv6_dns_sync from a Linux host
 # =============================================================================
+#
+# Removes both the current installation and any remnants of older manual
+# installations. All tasks use "failed_when: false" or "state: absent" so
+# they succeed silently if the file or service doesn't exist.
 
 # -----------------------------------------------------------------------------
-# Stop and disable the systemd service
+# Stop and disable all known service variants
 # -----------------------------------------------------------------------------
-# We stop and disable the service before removing its files. Trying to
-# remove a running service's files is messy and can leave systemd in a
-# confused state.
-#
-# "state: stopped" stops the service if it is running.
-# "enabled: false" prevents it from starting at boot.
-# "failed_when: false" means don't fail if the service doesn't exist —
-# this makes the task safe to run even if the service was never installed.
+# Handles both the current service name (ipv6-dns-watch) and older names
+# from previous manual installations (ipv6-dns-sync).
+# "failed_when: false" means the task succeeds even if the service doesn't
+# exist or was never installed.
 
 - name: Stop and disable ipv6-dns-watch service
   systemd:
@@ -22,13 +22,6 @@
     enabled: false
   failed_when: false
 
-# -----------------------------------------------------------------------------
-# Remove the systemd service unit file
-# -----------------------------------------------------------------------------
-# "state: absent" deletes the file if it exists, does nothing if it doesn't.
-# After removing a unit file systemd should be reloaded so it no longer
-# knows about the service.
-
 - name: Stop and disable shutdown cleanup service
   systemd:
     name: ipv6-dns-cleanup
@@ -36,7 +29,26 @@
     enabled: false
   failed_when: false
 
-- name: Remove systemd service file
+- name: Stop and disable old ipv6-dns-sync service (legacy)
+  systemd:
+    name: ipv6-dns-sync
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Stop old ipv6-dns-sync timer (legacy)
+  systemd:
+    name: ipv6-dns-sync.timer
+    state: stopped
+    enabled: false
+  failed_when: false
+
+# -----------------------------------------------------------------------------
+# Remove all service unit files (current and legacy)
+# -----------------------------------------------------------------------------
+# "state: absent" silently does nothing if the file doesn't exist.
+
+- name: Remove ipv6-dns-watch service file
   file:
     path: /etc/systemd/system/ipv6-dns-watch.service
     state: absent
@@ -48,17 +60,39 @@
     state: absent
   notify: Reload systemd
 
+- name: Remove old ipv6-dns-sync service file (legacy)
+  file:
+    path: /etc/systemd/system/ipv6-dns-sync.service
+    state: absent
+  notify: Reload systemd
+
+- name: Remove old ipv6-dns-sync timer file (legacy)
+  file:
+    path: /etc/systemd/system/ipv6-dns-sync.timer
+    state: absent
+  notify: Reload systemd
+
 # -----------------------------------------------------------------------------
-# Remove the watcher script
+# Remove all scripts (current and legacy)
 # -----------------------------------------------------------------------------
+
+- name: Remove ipv6_dns_sync.py
+  file:
+    path: /usr/local/bin/ipv6_dns_sync.py
+    state: absent
 
 - name: Remove ipv6_dns_watch_linux.sh
   file:
     path: /usr/local/bin/ipv6_dns_watch_linux.sh
     state: absent
 
+- name: Remove old ipv6-update-hook.sh (legacy)
+  file:
+    path: /usr/local/bin/ipv6-update-hook.sh
+    state: absent
+
 # -----------------------------------------------------------------------------
-# Remove the TSIG key file
+# Remove config files (current and legacy)
 # -----------------------------------------------------------------------------
 
 - name: Remove TSIG key file
@@ -66,11 +100,15 @@
     path: "{{ ipv6_keyfile_linux }}"
     state: absent
 
+- name: Remove old local config file (legacy)
+  file:
+    path: /usr/local/etc/ipv6_dns_sync.json
+    state: absent
+
 # -----------------------------------------------------------------------------
-# Remove the cache directory
+# Remove cache directory
 # -----------------------------------------------------------------------------
-# "state: absent" on a directory removes it and all its contents recursively,
-# equivalent to "rm -rf". This removes state.json and cached_config.json.
+# "state: absent" on a directory removes it and all its contents recursively.
 
 - name: Remove cache directory
   file:
