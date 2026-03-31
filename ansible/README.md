@@ -80,9 +80,9 @@ ansible-playbook -i inventory/hosts.yml site.yml --ask-vault-pass
 
 Any variable in `defaults/main.yml` can be overridden in `host_vars/<hostname>.yml`.
 
-For example, on an Intel Mac where Homebrew lives at `/usr/local`:
+For example, to use a different Python on a specific Mac:
 ```yaml
-ipv6_homebrew_python: "/usr/local/bin/python3"
+ipv6_macos_python: "/usr/local/bin/python3"
 ```
 
 ## Notes
@@ -90,5 +90,7 @@ ipv6_homebrew_python: "/usr/local/bin/python3"
 - The TSIG key is deployed to `/root/.mykey` on Linux and `/var/root/.mykey` on macOS,
   with permissions `0600` (root-readable only).
 - The macOS watcher runs in a Python venv at `/opt/ipv6-dns-sync/venv` with the
-  required PyObjC packages pre-installed.
+  required PyObjC packages pre-installed. The venv is created using the macOS
+  system Python (`/usr/bin/python3`). Override `ipv6_macos_python` in host_vars
+  if a different Python is needed on a specific host.
 - Re-running the playbook is safe — all tasks are idempotent.

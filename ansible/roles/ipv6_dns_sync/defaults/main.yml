@@ -44,8 +44,7 @@ ipv6_cache_dir_macos: "/var/root/.cache/ipv6_dns_sync"
 # Path for the Python venv used by the macOS watcher
 ipv6_venv_path: "/opt/ipv6-dns-sync/venv"
 
-# Homebrew Python to use when creating the venv.
-# On Apple Silicon Macs, Homebrew lives at /opt/homebrew.
-# On Intel Macs, it lives at /usr/local.
-# If you have a mix, override this per-host in host_vars.
-ipv6_homebrew_python: "/opt/homebrew/bin/python3"
+# Python to use when creating the venv on macOS.
+# Defaults to the macOS system Python 3.
+# Override per-host in host_vars if needed.
+ipv6_macos_python: "/usr/bin/python3"

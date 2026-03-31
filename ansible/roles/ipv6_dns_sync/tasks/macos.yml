@@ -9,6 +9,8 @@
     name: bind
     state: present
 
+
+
 - name: Create venv directory
   file:
     path: "{{ ipv6_venv_path }}"
@@ -17,7 +19,7 @@
     mode: "0755"
 
 - name: Create Python venv for macOS watcher
-  command: "{{ ipv6_homebrew_python }} -m venv {{ ipv6_venv_path }}"
+  command: "{{ ipv6_macos_python }} -m venv {{ ipv6_venv_path }}"
   args:
     creates: "{{ ipv6_venv_path }}/bin/python3"  # skip if venv already exists
 
