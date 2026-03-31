@@ -168,16 +168,18 @@
 # -----------------------------------------------------------------------------
 # Install PyObjC packages into the venv
 # -----------------------------------------------------------------------------
-# pip installs the two required PyObjC framework packages into the venv.
-# "state: present" means install them if not already installed.
+# pip installs the pyobjc meta-package which includes all framework bindings.
+# On newer PyObjC versions (11+) the individual framework packages
+# (SystemConfiguration, CoreFoundation etc) are bundled into the main
+# pyobjc package rather than being separately installable.
+# "state: present" means install if not already installed.
 # Ansible's pip module automatically uses the venv's pip when virtualenv
 # is specified.
 
 - name: Install PyObjC packages into venv
   pip:
     name:
-      - pyobjc-framework-SystemConfiguration
-      - pyobjc-framework-CoreFoundation
+      - pyobjc
     virtualenv: "{{ ipv6_venv_path }}"
     state: present
 
