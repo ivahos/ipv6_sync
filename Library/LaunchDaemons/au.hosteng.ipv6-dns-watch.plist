@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>au.hosteng.ipv6-dns-watch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Python interpreter in your venv -->
+        <string>/Users/ivar/.venv/ipv6-dns-sync/bin/python3.14</string>
+        <!-- Watcher script -->
+        <string>/usr/local/bin/ipv6_dns_watch.py</string>
+        <!-- Config -->
+    </array>
+
+    <!-- Run once at load, then keep running to watch for changes -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Log paths (optional but handy) -->
+    <key>StandardOutPath</key>
+    <string>/var/log/ipv6_dns_watch.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/ipv6_dns_watch.err.log</string>
+</dict>
+</plist>

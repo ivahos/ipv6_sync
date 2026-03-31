@@ -1,0 +1,4 @@
+key "ivarkey" {
+        algorithm hmac-sha256;
+        secret "****TSIG_KEY****";
+};
