@@ -4,12 +4,45 @@
 
 ---
 
+# --- Xcode Command Line Tools ---
+# Required for /usr/bin/python3 to work (it's a stub without CLT installed).
+# Uses the same headless method as Homebrew.
+
+- name: Check if Xcode Command Line Tools are installed
+  command: xcode-select -p
+  register: xcode_clt
+  changed_when: false
+  failed_when: false
+
+- name: Trigger headless Xcode Command Line Tools install
+  command: touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+  when: xcode_clt.rc != 0
+
+- name: Find Xcode Command Line Tools package name
+  shell: |
+    softwareupdate -l 2>/dev/null | grep -i "command line tools" | tail -1 | sed 's/^[[:space:]]*//' | sed 's/^\* //'
+  register: xcode_pkg
+  when: xcode_clt.rc != 0
+  changed_when: false
+
+- name: Install Xcode Command Line Tools
+  command: softwareupdate -i "{{ xcode_pkg.stdout }}" --verbose
+  when: xcode_clt.rc != 0 and xcode_pkg.stdout != ""
+
+- name: Remove Xcode CLT install trigger file
+  file:
+    path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+    state: absent
+  when: xcode_clt.rc != 0
+
+# --- Dependencies ---
+
 - name: Install nsupdate (via Homebrew bind)
   community.general.homebrew:
     name: bind
     state: present
 
-
+# --- Python venv ---
 
 - name: Create venv directory
   file:
@@ -31,6 +64,8 @@
     virtualenv: "{{ ipv6_venv_path }}"
     state: present
 
+# --- Files ---
+
 - name: Create cache directory
   file:
     path: "{{ ipv6_cache_dir_macos }}"
@@ -51,6 +86,8 @@
     dest: /usr/local/bin/ipv6_dns_watch_macos.py
     owner: root
     mode: "0755"
+
+# --- Service ---
 
 - name: Deploy launchd plist (templated with venv path)
   template:
