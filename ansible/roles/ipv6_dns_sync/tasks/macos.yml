@@ -135,7 +135,7 @@
 # We check that brew is available and fail with a helpful message if not.
 
 - name: Check Homebrew is installed
-  command: brew --version
+  command: /opt/homebrew/bin/brew --version
   register: brew_check
   changed_when: false
   failed_when: brew_check.rc != 0
@@ -144,6 +144,8 @@
   community.general.homebrew:
     name: bind
     state: present
+  environment:
+    PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # =============================================================================
 # PYTHON VIRTUAL ENVIRONMENT
