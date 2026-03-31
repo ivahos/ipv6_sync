@@ -47,7 +47,7 @@
 
 - name: Copy ipv6_dns_watch_macos.py to /usr/local/bin
   copy:
-    src: "{{ role_path }}/../../usr/local/bin/ipv6_dns_watch_macos.py"
+    src: "{{ playbook_dir }}/../usr/local/bin/ipv6_dns_watch_macos.py"
     dest: /usr/local/bin/ipv6_dns_watch_macos.py
     owner: root
     mode: "0755"

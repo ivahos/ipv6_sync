@@ -26,14 +26,14 @@
 
 - name: Copy ipv6_dns_watch_linux.sh to /usr/local/bin
   copy:
-    src: "{{ role_path }}/../../usr/local/bin/ipv6_dns_watch_linux.sh"
+    src: "{{ playbook_dir }}/../usr/local/bin/ipv6_dns_watch_linux.sh"
     dest: /usr/local/bin/ipv6_dns_watch_linux.sh
     owner: root
     mode: "0755"
 
 - name: Copy systemd service file
   copy:
-    src: "{{ role_path }}/../../etc/systemd/system/ipv6-dns-watch.service"
+    src: "{{ playbook_dir }}/../etc/systemd/system/ipv6-dns-watch.service"
     dest: /etc/systemd/system/ipv6-dns-watch.service
     owner: root
     mode: "0644"
