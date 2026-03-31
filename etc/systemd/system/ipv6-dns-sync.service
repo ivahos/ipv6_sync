@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/ipv6_dns_sync_linux.py --config /usr/local/etc/ipv6_dns_sync.json
+ExecStart=/usr/local/bin/ipv6_dns_sync.py --config-url https://a02.au/ipv6_sync_config/config.json
 User=root
 Group=root
 Nice=10
