@@ -47,9 +47,19 @@ CONFIG_PATH = "https://a02.au/ipv6_sync_config/config.json"
 LAST_RUN = 0
 MIN_INTERVAL = 0  # seconds
 
+# Shutdown flag — set to True when SIGTERM is received so the callback
+# ignores further IPv6 change events during network teardown.
+SHUTTING_DOWN = False
+
 
 def run_sync():
     global LAST_RUN
+    # Ignore address change events during shutdown — interfaces going down
+    # as the network tears down would otherwise trigger re-registration
+    # after the cleanup has already run.
+    if SHUTTING_DOWN:
+        return
+
     now = time.time()
     if now - LAST_RUN < MIN_INTERVAL:
         return
@@ -89,13 +99,18 @@ def run_shutdown():
 
 def handle_sigterm(signum, frame):
     """
-    SIGTERM handler — stop the CFRunLoop so main() can run cleanup and exit.
-    We stop the run loop rather than calling sys.exit() directly so that
-    any cleanup code after CFRunLoopRun() in main() gets a chance to run.
+    SIGTERM handler — run DNS cleanup and exit.
+    Sets SHUTTING_DOWN flag first so any further IPv6 change events from
+    network interfaces going down are ignored and don't re-register records
+    after the cleanup has run.
     """
+    global SHUTTING_DOWN
+    SHUTTING_DOWN = True
     run_shutdown()
     # Stop the CFRunLoop so CFRunLoopRun() returns and main() can exit cleanly
     CFRunLoopStop(CFRunLoopGetCurrent())
+    # Exit immediately after cleanup — don't process any more events
+    sys.exit(0)
 
 
 def callback(store, changed_keys, info):
