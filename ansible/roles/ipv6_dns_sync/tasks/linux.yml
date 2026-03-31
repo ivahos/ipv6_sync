@@ -124,19 +124,24 @@
 # -----------------------------------------------------------------------------
 # Enable and start the service
 # -----------------------------------------------------------------------------
-# "enabled: true" makes the service start automatically at boot
-#   (equivalent to "systemctl enable ipv6-dns-watch")
-# "state: started" starts it right now if it isn't already running
-#   (equivalent to "systemctl start ipv6-dns-watch")
-# "daemon_reload: true" ensures systemd has reloaded its config before
-#   trying to start the service (safe to have here as well as in the handler)
+# Split into two tasks so we can suppress the noisy systemd status dump
+# that appears in verbose output when starting a service.
 #
-# If the service is already running and nothing has changed, this task
-# does nothing (idempotent).
+# "enabled: true" makes the service start automatically at boot.
+# "daemon_reload: true" ensures systemd has reloaded its config first.
 
-- name: Enable and start ipv6-dns-watch service
+- name: Enable ipv6-dns-watch service
   systemd:
     name: ipv6-dns-watch
     enabled: true
-    state: started
     daemon_reload: true
+
+# "no_log: true" suppresses the wall of systemd status fields that Ansible
+# returns when starting a service — they are not useful in normal output.
+# The task still reports changed/ok/failed correctly in the play recap.
+
+- name: Start ipv6-dns-watch service
+  systemd:
+    name: ipv6-dns-watch
+    state: started
+  no_log: true
