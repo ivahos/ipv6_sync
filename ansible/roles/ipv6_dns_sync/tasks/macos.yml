@@ -262,6 +262,13 @@
 # in the watcher daemon, as launchd does not guarantee SIGTERM delivery to
 # KeepAlive daemons on subsequent shutdowns after the first.
 
+- name: Copy ipv6_dns_shutdown_hook.sh to /usr/local/bin
+  copy:
+    src: "{{ playbook_dir }}/../usr/local/bin/ipv6_dns_shutdown_hook.sh"
+    dest: /usr/local/bin/ipv6_dns_shutdown_hook.sh
+    owner: root
+    mode: "0755"
+
 - name: Deploy shutdown cleanup plist
   template:
     src: au.hosteng.ipv6-dns-shutdown.plist.j2

@@ -33,6 +33,11 @@
     path: /usr/local/bin/ipv6_dns_watch_macos.py
     state: absent
 
+- name: Remove ipv6_dns_shutdown_hook.sh
+  file:
+    path: /usr/local/bin/ipv6_dns_shutdown_hook.sh
+    state: absent
+
 # -----------------------------------------------------------------------------
 # Remove the TSIG key file
 # -----------------------------------------------------------------------------

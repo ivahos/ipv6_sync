@@ -6,38 +6,34 @@
     <key>Label</key>
     <string>au.hosteng.ipv6-dns-shutdown</string>
 
+    <!-- Run the shutdown hook script which traps SIGTERM and runs DNS cleanup.
+         The script stays alive via "tail -f /dev/null" and waits for SIGTERM,
+         which launchd sends to all running daemons during system shutdown.
+         This is more reliable than RunAtShutdown or SIGTERM handling in
+         the Python watcher. -->
     <key>ProgramArguments</key>
     <array>
-        <string>{{ ipv6_venv_path }}/bin/python3</string>
-        <string>/usr/local/bin/ipv6_dns_sync.py</string>
-        <string>--config-url</string>
-        <string>{{ ipv6_sync_config_url }}</string>
-        <string>--shutdown</string>
+        <string>/usr/local/bin/ipv6_dns_shutdown_hook.sh</string>
     </array>
 
-    <!-- RunAtShutdown: run this job when the system is shutting down.
-         This is the reliable way to run cleanup tasks on macOS shutdown,
-         as SIGTERM delivery to KeepAlive daemons is not guaranteed on
-         subsequent shutdowns after the first. -->
-    <key>RunAtShutdown</key>
+    <!-- Load at boot and keep running until shutdown -->
+    <key>RunAtLoad</key>
     <true/>
 
-    <!-- RunAtLoad: also run once at load time to verify the script works.
-         Without this, launchd won't load a RunAtShutdown-only plist. -->
-    <key>RunAtLoad</key>
+    <!-- KeepAlive false — if the script exits unexpectedly don't restart it.
+         We don't want it restarting mid-shutdown after cleanup has run. -->
+    <key>KeepAlive</key>
     <false/>
+
+    <!-- Give the script enough time to complete DNS cleanup before
+         launchd forcibly kills it. -->
+    <key>ExitTimeout</key>
+    <integer>30</integer>
 
     <key>StandardOutPath</key>
     <string>/var/log/ipv6_dns_shutdown.out.log</string>
 
     <key>StandardErrorPath</key>
     <string>/var/log/ipv6_dns_shutdown.err.log</string>
-
-    <!-- Give the script enough time to complete DNS cleanup -->
-    <key>ExitTimeout</key>
-    <integer>30</integer>
-
-    <key>ProcessType</key>
-    <string>Background</string>
 </dict>
 </plist>
