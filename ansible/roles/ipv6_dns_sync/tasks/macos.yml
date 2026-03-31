@@ -16,7 +16,7 @@
 # Check internet connectivity
 # -----------------------------------------------------------------------------
 # Several steps below require internet access:
-#   - Xcode Command Line Tools are downloaded from Apple's servers
+#   - Homebrew and Python 3 are downloaded during bootstrap
 #   - PyObjC packages are downloaded from PyPI
 #
 # We check this upfront with a single ping so the playbook fails immediately
@@ -123,6 +123,29 @@
   when: xcode_clt.rc != 0
 
 # =============================================================================
+# DEPENDENCIES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Install nsupdate via Homebrew
+# -----------------------------------------------------------------------------
+# nsupdate is the tool that sends DNS update requests to the DNS server.
+# On macOS it comes as part of the "bind" Homebrew package.
+# Homebrew must be installed first via scripts/bootstrap-macos.sh.
+# We check that brew is available and fail with a helpful message if not.
+
+- name: Check Homebrew is installed
+  command: brew --version
+  register: brew_check
+  changed_when: false
+  failed_when: brew_check.rc != 0
+
+- name: Install nsupdate (via Homebrew bind)
+  community.general.homebrew:
+    name: bind
+    state: present
+
+# =============================================================================
 # PYTHON VIRTUAL ENVIRONMENT
 # =============================================================================
 # The macOS watcher script (ipv6_dns_watch_macos.py) uses two Python modules
@@ -161,7 +184,7 @@
 # Ansible skips this task. This avoids recreating the venv on every run.
 
 - name: Create Python venv for macOS watcher
-  command: "{{ ipv6_macos_python }} -m venv {{ ipv6_venv_path }}"
+  command: "{{ ipv6_homebrew_python }} -m venv {{ ipv6_venv_path }}"
   args:
     creates: "{{ ipv6_venv_path }}/bin/python3"
 
