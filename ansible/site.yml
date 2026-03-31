@@ -1,35 +1,78 @@
 ---
 # =============================================================================
-# site.yml — Main playbook entry point
+# site.yml — Main deployment playbook
 # =============================================================================
 #
-# This is the file you run with ansible-playbook. It ties together the
-# inventory (your list of hosts) and the role (the actual work to do).
-#
-# A "role" in Ansible is a reusable bundle of tasks, templates and variables
-# organised in a standard directory structure. Our role is called
-# ipv6_dns_sync and lives in roles/ipv6_dns_sync/.
-#
-# "hosts: all" means run against every host in the inventory unless you
-# restrict it with --limit on the command line, which is recommended so you
-# don't accidentally deploy to all hosts at once.
-#
-# "become: true" means Ansible will use sudo to run tasks as root on the
-# remote host. This is needed because we're installing packages, writing
-# files to system directories, and managing services.
+# Deploys ipv6_dns_sync to all hosts. Automatically handles platform
+# differences:
+#   - macOS hosts (in the 'macos' inventory group): runs the Homebrew
+#     bootstrap first (installs Homebrew + Python 3 if not present),
+#     then deploys the scripts and launchd service.
+#   - Linux hosts (in the 'linux' inventory group): installs dependencies
+#     via apt and deploys the scripts and systemd service.
 #
 # Usage:
 #   Deploy to all hosts:
-#     ansible-playbook -i inventory/hosts.yml site.yml
+#     ansible-playbook ansible/site.yml
 #
 #   Deploy to a single host:
-#     ansible-playbook -i inventory/hosts.yml site.yml --limit myhostname
+#     ansible-playbook ansible/site.yml --limit myhostname
 #
 #   Dry run (show what would change without making any changes):
-#     ansible-playbook -i inventory/hosts.yml site.yml --check
-#
-#   Verbose output (useful for debugging):
-#     ansible-playbook -i inventory/hosts.yml site.yml -v
+#     ansible-playbook ansible/site.yml --check
+
+# -----------------------------------------------------------------------------
+# Stage 1: macOS bootstrap (macOS hosts only)
+# -----------------------------------------------------------------------------
+# Runs the Homebrew bootstrap via SSH from the controller as the regular user.
+# Skipped entirely if there are no macOS hosts in the current --limit.
+# Safe to run on already-bootstrapped Macs — skips cleanly if Homebrew
+# and Python are already installed.
+
+- name: Bootstrap macOS hosts
+  hosts: macos
+  gather_facts: false
+  become: false
+
+  tasks:
+
+    - name: Check SSH connectivity from controller to Mac
+      local_action:
+        module: command
+        cmd: ssh -o BatchMode=yes -o ConnectTimeout=5 {{ ansible_user }}@{{ inventory_hostname }} echo ok
+      register: ssh_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with helpful message if SSH not working
+      fail:
+        msg: >
+          Cannot SSH to {{ inventory_hostname }} as {{ ansible_user }} without a password.
+          Please add your public SSH key to ~/.ssh/authorized_keys on the Mac and rerun.
+          On the Mac run:
+            mkdir -p ~/.ssh
+            curl https://github.com/{{ ansible_user }}.keys >> ~/.ssh/authorized_keys
+            chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+      when: ssh_check.rc != 0
+
+    - name: Install Homebrew and Python 3 on Mac (via SSH from controller)
+      local_action:
+        module: command
+        cmd: ssh {{ ansible_user }}@{{ inventory_hostname }} 'bash -s'
+        stdin: "{{ lookup('file', playbook_dir + '/../scripts/bootstrap-macos.sh') }}"
+      register: brew_bootstrap
+      changed_when: "'already installed' not in brew_bootstrap.stdout"
+
+    - name: Show bootstrap output
+      debug:
+        msg: "{{ brew_bootstrap.stdout_lines }}"
+      when: brew_bootstrap.stdout_lines is defined
+
+# -----------------------------------------------------------------------------
+# Stage 2: Deploy to all hosts
+# -----------------------------------------------------------------------------
+# Deploys scripts, TSIG key, and service to all hosts. The role detects the
+# OS automatically and runs the correct tasks for each platform.
 
 - name: Deploy ipv6_dns_sync
   hosts: all
