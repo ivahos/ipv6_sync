@@ -1,13 +1,37 @@
-# roles/ipv6_dns_sync/handlers/main.yml
-#
-# Handlers are triggered by 'notify' in tasks and run once at the end
-# of the play, even if notified multiple times.
-
 ---
+# =============================================================================
+# handlers/main.yml — Service reload handlers
+# =============================================================================
+#
+# Handlers are special tasks that only run when explicitly triggered by a
+# "notify" directive in another task. They always run at the END of the play,
+# after all tasks have completed, and only once even if notified multiple
+# times. This makes them ideal for service restarts — if five tasks all
+# modify config files and notify the same handler, the service is only
+# restarted once at the end rather than five times.
+
+# -----------------------------------------------------------------------------
+# Reload systemd (Linux)
+# -----------------------------------------------------------------------------
+# Triggered when the systemd service unit file is copied or changed.
+# "systemctl daemon-reload" tells systemd to re-read all unit files from
+# disk. This is required after adding or modifying a .service file, otherwise
+# systemd will continue using its cached (old) version of the file.
 
 - name: Reload systemd
   systemd:
     daemon_reload: true
+
+# -----------------------------------------------------------------------------
+# Reload launchd plist (macOS)
+# -----------------------------------------------------------------------------
+# Triggered when the launchd plist file is changed.
+# We unload the old version first, then load the new one. This effectively
+# restarts the watcher service with the updated configuration.
+#
+# "ignore_errors: true" handles the case where the service wasn't loaded
+# in the first place (unload would fail) — we don't want that to stop the
+# handler from loading the new version.
 
 - name: Reload launchd plist
   command: >

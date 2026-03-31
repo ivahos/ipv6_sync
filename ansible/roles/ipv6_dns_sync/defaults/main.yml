@@ -1,50 +1,84 @@
-# roles/ipv6_dns_sync/defaults/main.yml
+---
+# =============================================================================
+# defaults/main.yml — Role default variables
+# =============================================================================
 #
-# Default variables for the ipv6_dns_sync role.
-# Override these in your inventory (host_vars / group_vars) or on the
-# command line with -e, rather than editing this file directly.
+# This file defines all variables used by the ipv6_dns_sync role, with
+# sensible defaults. Variables defined here have the lowest precedence in
+# Ansible — they can be overridden by:
+#   - inventory/group_vars/<group>.yml  (applies to all hosts in a group)
+#   - inventory/host_vars/<hostname>.yml (applies to a specific host)
+#   - Command line: ansible-playbook ... -e "variable=value"
+#
+# The intended pattern is:
+#   - Leave this file as-is (it documents what variables exist and why)
+#   - Override per-host values (like the TSIG key) in host_vars
 
-# --- Shared ---
+# =============================================================================
+# SHARED VARIABLES (used on both Linux and macOS)
+# =============================================================================
 
-# URL where the sync script downloads its JSON config
+# URL where the sync script downloads its JSON configuration at runtime.
+# The config tells the script which DNS server to talk to, which reverse
+# zones to manage, which address prefixes to include/exclude, etc.
+# Hosting the config centrally means you can update DNS policy for all
+# hosts without redeploying the scripts.
 ipv6_sync_config_url: "https://a02.au/ipv6_sync_config/config.json"
 
-# The actual TSIG key secret. Override this per-host in host_vars
-# using an Ansible Vault-encrypted value.
-# Example host_vars/myhost.yml:
-#   ipv6_tsig_key: !vault |
-#     $ANSIBLE_VAULT;1.1;AES256
-#     ...
+# The TSIG key secret used to authenticate DNS update requests.
+# This should be overridden per-host in inventory/host_vars/<hostname>.yml
+# with the actual secret value. For security, consider encrypting it with
+# Ansible Vault (see ansible/README.md for instructions).
+# The placeholder value here will not work — it must be overridden.
 ipv6_tsig_key: "****TSIG_KEY****"
 
-# TSIG key name (the name inside the key { } block in .mykey)
+# The name of the TSIG key as defined in the DNS server's configuration.
+# Must match the key name on the DNS server exactly.
 ipv6_tsig_key_name: "ivarkey"
 
-# TSIG key algorithm
+# The HMAC algorithm used by the TSIG key.
+# Must match the algorithm configured on the DNS server.
 ipv6_tsig_key_algorithm: "hmac-sha256"
 
+# =============================================================================
+# LINUX VARIABLES
+# =============================================================================
 
-# --- Linux ---
-
-# Where the TSIG key file is placed on Linux (root home)
+# Path where the TSIG key file is written on Linux.
+# On Linux, root's home directory is /root, so ~/.mykey resolves to /root/.mykey.
+# The sync script reads this path from the JSON config's "keyfile" field.
 ipv6_keyfile_linux: "/root/.mykey"
 
-# Cache directory for state and cached config
+# Directory where the sync script stores its state and cached config on Linux.
+# - state.json: last known IPv6 addresses (used to diff against current state)
+# - cached_config.json: fallback copy of the remote config if URL is unreachable
 ipv6_cache_dir_linux: "/root/.cache/ipv6_dns_sync"
 
+# =============================================================================
+# MACOS VARIABLES
+# =============================================================================
 
-# --- macOS ---
-
-# Where the TSIG key file is placed on macOS (root home is /var/root)
+# Path where the TSIG key file is written on macOS.
+# On macOS, root's home directory is /var/root (not /root as on Linux),
+# so ~/.mykey resolves to /var/root/.mykey.
 ipv6_keyfile_macos: "/var/root/.mykey"
 
-# Cache directory on macOS
+# Cache directory on macOS — same purpose as the Linux cache directory above,
+# just under the macOS root home path.
 ipv6_cache_dir_macos: "/var/root/.cache/ipv6_dns_sync"
 
-# Path for the Python venv used by the macOS watcher
+# Path where the Python virtual environment is created for the macOS watcher.
+# A venv is needed because the watcher uses PyObjC framework modules
+# (pyobjc-framework-SystemConfiguration and pyobjc-framework-CoreFoundation)
+# which are not part of the standard library.
+# We use a fixed system-wide path rather than a user home directory so it
+# works consistently regardless of which user account is being used.
 ipv6_venv_path: "/opt/ipv6-dns-sync/venv"
 
-# Python to use when creating the venv on macOS.
-# Defaults to the macOS system Python 3.
-# Override per-host in host_vars if needed.
+# The Python interpreter used to create the venv.
+# On macOS, /usr/bin/python3 is provided by Xcode Command Line Tools.
+# Note: without CLT installed it is just a stub — the macOS tasks handle
+# installing CLT automatically if it is not present.
+# Override this per-host in host_vars if a different Python is needed,
+# for example: ipv6_macos_python: "/usr/local/bin/python3"
 ipv6_macos_python: "/usr/bin/python3"

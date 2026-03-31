@@ -1,11 +1,31 @@
-# roles/ipv6_dns_sync/tasks/main.yml
-#
-# Entry point — installs the shared sync script then delegates to the
-# OS-specific task file for the watcher and service setup.
-
 ---
+# =============================================================================
+# tasks/main.yml — Role entry point
+# =============================================================================
+#
+# This is the first file Ansible reads when it runs the ipv6_dns_sync role.
+# It has two jobs:
+#   1. Deploy the sync script, which is shared by both platforms
+#   2. Hand off to the correct OS-specific task file
+#
+# Ansible automatically detects the remote host's operating system during the
+# "Gathering Facts" step at the start of every play. The facts it collects
+# include ansible_system, which is "Linux" on Linux and "Darwin" on macOS.
+# We use this to decide which task file to include.
 
-# --- Shared: deploy the sync script to all hosts ---
+# -----------------------------------------------------------------------------
+# Deploy the sync script to all hosts
+# -----------------------------------------------------------------------------
+# ipv6_dns_sync.py is the same script on both Linux and macOS — it handles
+# both platforms internally. We copy it to /usr/local/bin so it is on the
+# PATH and can be called by the watcher script.
+#
+# "src" uses playbook_dir (the ansible/ directory) to build the path to the
+# script in the repo. The script lives at usr/local/bin/ relative to the
+# repo root, which is one level up from the ansible/ directory (hence "/../").
+#
+# mode "0755" means the file is executable by everyone but only writable
+# by root (owner=root set above).
 
 - name: Copy ipv6_dns_sync.py to /usr/local/bin
   copy:
@@ -14,7 +34,12 @@
     owner: root
     mode: "0755"
 
-# --- Delegate to OS-specific tasks ---
+# -----------------------------------------------------------------------------
+# Branch to OS-specific tasks
+# -----------------------------------------------------------------------------
+# include_tasks dynamically loads another task file. The "when" condition
+# ensures only the matching file is loaded — the other is silently skipped.
+# You will see "skipping" in the Ansible output for the non-matching platform.
 
 - name: Include Linux tasks
   include_tasks: linux.yml

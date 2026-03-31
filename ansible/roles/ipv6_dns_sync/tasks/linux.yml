@@ -1,8 +1,23 @@
-# roles/ipv6_dns_sync/tasks/linux.yml
-#
-# Tasks specific to Linux (Debian/Ubuntu) hosts.
-
 ---
+# =============================================================================
+# tasks/linux.yml — Linux (Debian/Ubuntu) specific tasks
+# =============================================================================
+#
+# This file is included by main.yml when the target host is Linux.
+# It installs dependencies, deploys files, and sets up the systemd service.
+# All tasks run as root (inherited from "become: true" in site.yml).
+
+# -----------------------------------------------------------------------------
+# Remove the CDROM apt source if present
+# -----------------------------------------------------------------------------
+# Fresh Debian installs often have a "deb cdrom:..." line in /etc/apt/sources.list
+# left over from the installation media. This causes apt to fail when trying
+# to update the package cache because the CD/DVD is no longer present.
+#
+# The lineinfile module finds lines matching a pattern and removes them.
+# "regexp" is a regular expression — "^deb cdrom:" matches any line starting
+# with "deb cdrom:". "state: absent" means remove it if found.
+# If the line isn't there, this task does nothing (idempotent).
 
 - name: Remove cdrom apt source if present
   lineinfile:
@@ -10,11 +25,35 @@
     regexp: '^deb cdrom:'
     state: absent
 
+# -----------------------------------------------------------------------------
+# Install nsupdate
+# -----------------------------------------------------------------------------
+# nsupdate is the tool that actually sends DNS update requests to the DNS
+# server. It is part of the bind9-dnsutils package on Debian/Ubuntu.
+#
+# "update_cache: true" runs "apt update" before installing, equivalent to
+# running "apt update && apt install bind9-dnsutils" manually.
+# "state: present" means install it if not already installed, and do nothing
+# if it is already there (idempotent).
+
 - name: Install nsupdate (bind9-dnsutils)
   apt:
     name: bind9-dnsutils
     state: present
     update_cache: true
+
+# -----------------------------------------------------------------------------
+# Create the cache directory
+# -----------------------------------------------------------------------------
+# The sync script stores two files here:
+#   - state.json: the last known set of IPv6 addresses, used to compute what
+#     has changed since the last run so we only send necessary DNS updates
+#   - cached_config.json: a local copy of the remote JSON config, used as a
+#     fallback if the config URL is temporarily unreachable
+#
+# "state: directory" creates the directory if it doesn't exist.
+# mode "0700" means only root can read, write or enter it — this is
+# appropriate since the cached config may contain the path to the TSIG key.
 
 - name: Create cache directory
   file:
@@ -23,12 +62,35 @@
     owner: root
     mode: "0700"
 
+# -----------------------------------------------------------------------------
+# Deploy the TSIG key file
+# -----------------------------------------------------------------------------
+# The TSIG (Transaction SIGnature) key authenticates our DNS update requests
+# to the DNS server, proving we are authorised to make changes.
+#
+# We use a Jinja2 template (templates/mykey.j2) rather than a static file
+# because the key secret is different per deployment and is stored in the
+# host_vars file for this host (inventory/host_vars/<hostname>.yml).
+# Ansible substitutes the variable values into the template at deploy time.
+#
+# mode "0600" means only root can read or write this file — anyone else
+# would be able to make unauthorised DNS updates if they got the key.
+
 - name: Deploy TSIG key file
   template:
     src: mykey.j2
     dest: "{{ ipv6_keyfile_linux }}"
     owner: root
-    mode: "0600"  # readable by root only — contains the TSIG secret
+    mode: "0600"
+
+# -----------------------------------------------------------------------------
+# Deploy the watcher script
+# -----------------------------------------------------------------------------
+# ipv6_dns_watch_linux.sh is a bash script that runs "ip monitor address"
+# to watch for IPv6 address changes on the host's network interfaces.
+# When a relevant change is detected it calls ipv6_dns_sync.py to update DNS.
+# It uses a trailing-edge debounce (10 seconds of quiet after the last event)
+# to avoid hammering the DNS server during rapid address changes.
 
 - name: Copy ipv6_dns_watch_linux.sh to /usr/local/bin
   copy:
@@ -37,6 +99,20 @@
     owner: root
     mode: "0755"
 
+# -----------------------------------------------------------------------------
+# Deploy the systemd service unit
+# -----------------------------------------------------------------------------
+# The service unit file tells systemd how to manage the watcher script as a
+# long-running background service:
+#   - Start it automatically at boot (after the network is online)
+#   - Restart it automatically if it crashes
+#   - Log its output to /var/log/ipv6_watch.out and .err
+#
+# "notify: Reload systemd" triggers the handler in handlers/main.yml which
+# runs "systemctl daemon-reload" after the file is copied. This is required
+# whenever a service unit file is added or changed, so systemd picks up the
+# new configuration.
+
 - name: Copy systemd service file
   copy:
     src: "{{ playbook_dir }}/../etc/systemd/system/ipv6-dns-watch.service"
@@ -44,6 +120,19 @@
     owner: root
     mode: "0644"
   notify: Reload systemd
+
+# -----------------------------------------------------------------------------
+# Enable and start the service
+# -----------------------------------------------------------------------------
+# "enabled: true" makes the service start automatically at boot
+#   (equivalent to "systemctl enable ipv6-dns-watch")
+# "state: started" starts it right now if it isn't already running
+#   (equivalent to "systemctl start ipv6-dns-watch")
+# "daemon_reload: true" ensures systemd has reloaded its config before
+#   trying to start the service (safe to have here as well as in the handler)
+#
+# If the service is already running and nothing has changed, this task
+# does nothing (idempotent).
 
 - name: Enable and start ipv6-dns-watch service
   systemd:

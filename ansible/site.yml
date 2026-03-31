@@ -1,15 +1,39 @@
 ---
-# site.yml — main playbook for ipv6_dns_sync deployment
+# =============================================================================
+# site.yml — Main playbook entry point
+# =============================================================================
+#
+# This is the file you run with ansible-playbook. It ties together the
+# inventory (your list of hosts) and the role (the actual work to do).
+#
+# A "role" in Ansible is a reusable bundle of tasks, templates and variables
+# organised in a standard directory structure. Our role is called
+# ipv6_dns_sync and lives in roles/ipv6_dns_sync/.
+#
+# "hosts: all" means run against every host in the inventory unless you
+# restrict it with --limit on the command line, which is recommended so you
+# don't accidentally deploy to all hosts at once.
+#
+# "become: true" means Ansible will use sudo to run tasks as root on the
+# remote host. This is needed because we're installing packages, writing
+# files to system directories, and managing services.
 #
 # Usage:
-#   ansible-playbook -i inventory/hosts.yml site.yml
+#   Deploy to all hosts:
+#     ansible-playbook -i inventory/hosts.yml site.yml
 #
-# To deploy to a single host only:
-#   ansible-playbook -i inventory/hosts.yml site.yml --limit myhostname
+#   Deploy to a single host:
+#     ansible-playbook -i inventory/hosts.yml site.yml --limit myhostname
+#
+#   Dry run (show what would change without making any changes):
+#     ansible-playbook -i inventory/hosts.yml site.yml --check
+#
+#   Verbose output (useful for debugging):
+#     ansible-playbook -i inventory/hosts.yml site.yml -v
 
 - name: Deploy ipv6_dns_sync
   hosts: all
-  become: true   # run as root (sudo)
+  become: true
 
   roles:
     - ipv6_dns_sync

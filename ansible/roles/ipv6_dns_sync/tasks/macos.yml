@@ -1,10 +1,35 @@
-# roles/ipv6_dns_sync/tasks/macos.yml
-#
-# Tasks specific to macOS hosts.
-
 ---
+# =============================================================================
+# tasks/macos.yml — macOS specific tasks
+# =============================================================================
+#
+# This file is included by main.yml when the target host is macOS (Darwin).
+# It installs dependencies, sets up a Python virtual environment with the
+# required macOS-specific modules, deploys files, and loads the launchd daemon.
+# All tasks run as root (inherited from "become: true" in site.yml).
 
-# --- Preflight checks ---
+# =============================================================================
+# PREFLIGHT CHECKS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Check internet connectivity
+# -----------------------------------------------------------------------------
+# Several steps below require internet access:
+#   - Xcode Command Line Tools are downloaded from Apple's servers
+#   - Homebrew packages are downloaded from the internet
+#   - PyObjC packages are downloaded from PyPI
+#
+# We check this upfront with a single ping so the playbook fails immediately
+# with a clear message rather than hanging or failing mid-way through with a
+# confusing error. 1.1.1.1 is Cloudflare's public DNS resolver — a reliable
+# host to ping that is unlikely to be blocked.
+#
+# "changed_when: false" tells Ansible this task never changes anything on
+# the host (a ping is read-only), so it won't be counted as a change in the
+# play recap.
+# "failed_when: internet_check.rc != 0" means fail the task if ping returns
+# a non-zero exit code (i.e. the host is not reachable).
 
 - name: Check internet connectivity (required for Xcode CLT and Homebrew)
   command: ping -c 1 1.1.1.1
@@ -12,9 +37,28 @@
   changed_when: false
   failed_when: internet_check.rc != 0
 
-# --- Xcode Command Line Tools ---
-# Required for /usr/bin/python3 to work (it's a stub without CLT installed).
-# Uses the same headless method as Homebrew.
+# =============================================================================
+# XCODE COMMAND LINE TOOLS
+# =============================================================================
+# On macOS, /usr/bin/python3 is a stub — it does nothing until Xcode Command
+# Line Tools (CLT) are installed, at which point it becomes a real Python 3
+# interpreter. We need it to create the Python venv for the watcher script.
+#
+# Normally installing CLT triggers a GUI popup which requires someone to
+# click through it — not useful for automation. The trick below (also used
+# by Homebrew) suppresses the GUI and installs CLT silently via
+# softwareupdate, the same tool used for macOS system updates.
+
+# -----------------------------------------------------------------------------
+# Check if CLT is already installed
+# -----------------------------------------------------------------------------
+# "xcode-select -p" prints the path to the active developer tools directory
+# and exits 0 if CLT is installed, or exits non-zero if not.
+#
+# "register: xcode_clt" saves the result (including the exit code as .rc)
+# so subsequent tasks can check it with "when: xcode_clt.rc != 0".
+# "failed_when: false" prevents Ansible from treating a non-zero exit as a
+# failure — we handle it ourselves in the tasks below.
 
 - name: Check if Xcode Command Line Tools are installed
   command: xcode-select -p
@@ -22,9 +66,31 @@
   changed_when: false
   failed_when: false
 
+# -----------------------------------------------------------------------------
+# Trigger the headless CLT install
+# -----------------------------------------------------------------------------
+# Creating this specific file tells macOS's software update mechanism to
+# include Xcode CLT in the list of available updates returned by
+# "softwareupdate -l". Without it, CLT won't appear in the list.
+# This is the same trick Homebrew uses when it installs CLT automatically.
+#
+# All tasks with "when: xcode_clt.rc != 0" are skipped entirely if CLT is
+# already installed, making this section idempotent.
+
 - name: Trigger headless Xcode Command Line Tools install
   command: touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
   when: xcode_clt.rc != 0
+
+# -----------------------------------------------------------------------------
+# Find the CLT package name
+# -----------------------------------------------------------------------------
+# "softwareupdate -l" lists available software updates. We grep for the
+# Command Line Tools entry and extract its exact package name, which changes
+# with each macOS version (e.g. "Command Line Tools for Xcode-15.0").
+# We need the exact name to pass to "softwareupdate -i" in the next task.
+#
+# "shell" is used instead of "command" here because we need pipe (|) and
+# other shell features. The result is saved in xcode_pkg.stdout.
 
 - name: Find Xcode Command Line Tools package name
   shell: |
@@ -33,9 +99,23 @@
   when: xcode_clt.rc != 0
   changed_when: false
 
+# -----------------------------------------------------------------------------
+# Install CLT
+# -----------------------------------------------------------------------------
+# "softwareupdate -i" installs the named package. This downloads CLT from
+# Apple's servers and installs it silently — no GUI popup. This can take
+# a few minutes depending on internet speed, so don't be alarmed if the
+# playbook appears to hang here briefly.
+
 - name: Install Xcode Command Line Tools
   command: softwareupdate -i "{{ xcode_pkg.stdout }}" --verbose
   when: xcode_clt.rc != 0 and xcode_pkg.stdout != ""
+
+# -----------------------------------------------------------------------------
+# Clean up the trigger file
+# -----------------------------------------------------------------------------
+# Remove the trigger file we created earlier regardless of whether the
+# install succeeded, so it doesn't interfere with future softwareupdate runs.
 
 - name: Remove Xcode CLT install trigger file
   file:
@@ -43,14 +123,46 @@
     state: absent
   when: xcode_clt.rc != 0
 
-# --- Dependencies ---
+# =============================================================================
+# DEPENDENCIES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Install nsupdate via Homebrew
+# -----------------------------------------------------------------------------
+# nsupdate is the tool that sends DNS update requests to the DNS server.
+# On macOS it comes as part of the "bind" Homebrew package.
+# This assumes Homebrew is already installed on the target Mac.
+# The community.general.homebrew module is provided by the
+# community.general Ansible collection (install with:
+# ansible-galaxy collection install community.general).
 
 - name: Install nsupdate (via Homebrew bind)
   community.general.homebrew:
     name: bind
     state: present
 
-# --- Python venv ---
+# =============================================================================
+# PYTHON VIRTUAL ENVIRONMENT
+# =============================================================================
+# The macOS watcher script (ipv6_dns_watch_macos.py) uses two Python modules
+# from the PyObjC bridge library to receive macOS system notifications:
+#   - SystemConfiguration: to watch for network interface IPv6 changes
+#   - CoreFoundation: to run the macOS event loop (CFRunLoop)
+#
+# These are not part of the Python standard library, so we install them into
+# a dedicated virtual environment (venv) at a fixed system-wide path
+# (/opt/ipv6-dns-sync/venv). Using a venv keeps these packages isolated from
+# the system Python and any other Python projects on the machine.
+#
+# The launchd plist is templated to point to the Python binary inside this
+# venv, so the watcher script always runs with the right dependencies.
+
+# -----------------------------------------------------------------------------
+# Create the venv directory
+# -----------------------------------------------------------------------------
+# We create the parent directory first before creating the venv inside it.
+# mode "0755" means root owns and can write it; everyone can read and enter.
 
 - name: Create venv directory
   file:
@@ -59,10 +171,27 @@
     owner: root
     mode: "0755"
 
+# -----------------------------------------------------------------------------
+# Create the venv
+# -----------------------------------------------------------------------------
+# "python3 -m venv <path>" creates a self-contained Python environment at
+# the given path with its own pip and site-packages directory.
+#
+# "creates: ..." is an idempotency guard — if the file already exists,
+# Ansible skips this task. This avoids recreating the venv on every run.
+
 - name: Create Python venv for macOS watcher
   command: "{{ ipv6_macos_python }} -m venv {{ ipv6_venv_path }}"
   args:
-    creates: "{{ ipv6_venv_path }}/bin/python3"  # skip if venv already exists
+    creates: "{{ ipv6_venv_path }}/bin/python3"
+
+# -----------------------------------------------------------------------------
+# Install PyObjC packages into the venv
+# -----------------------------------------------------------------------------
+# pip installs the two required PyObjC framework packages into the venv.
+# "state: present" means install them if not already installed.
+# Ansible's pip module automatically uses the venv's pip when virtualenv
+# is specified.
 
 - name: Install PyObjC packages into venv
   pip:
@@ -72,7 +201,16 @@
     virtualenv: "{{ ipv6_venv_path }}"
     state: present
 
-# --- Files ---
+# =============================================================================
+# FILES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Create the cache directory
+# -----------------------------------------------------------------------------
+# Same purpose as on Linux — stores state.json and cached_config.json.
+# On macOS the root home directory is /var/root (not /root as on Linux),
+# so the cache path is /var/root/.cache/ipv6_dns_sync.
 
 - name: Create cache directory
   file:
@@ -81,12 +219,26 @@
     owner: root
     mode: "0700"
 
+# -----------------------------------------------------------------------------
+# Deploy the TSIG key file
+# -----------------------------------------------------------------------------
+# Same as Linux but written to /var/root/.mykey (macOS root home).
+# See linux.yml for a full explanation of TSIG keys.
+
 - name: Deploy TSIG key file
   template:
     src: mykey.j2
     dest: "{{ ipv6_keyfile_macos }}"
     owner: root
-    mode: "0600"  # readable by root only — contains the TSIG secret
+    mode: "0600"
+
+# -----------------------------------------------------------------------------
+# Deploy the macOS watcher script
+# -----------------------------------------------------------------------------
+# ipv6_dns_watch_macos.py uses the macOS SystemConfiguration framework to
+# receive notifications when IPv6 addresses change on any network interface.
+# It runs in a CFRunLoop (macOS event loop) and calls ipv6_dns_sync.py
+# whenever a relevant change is detected.
 
 - name: Copy ipv6_dns_watch_macos.py to /usr/local/bin
   copy:
@@ -95,7 +247,24 @@
     owner: root
     mode: "0755"
 
-# --- Service ---
+# =============================================================================
+# SERVICE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Deploy the launchd plist
+# -----------------------------------------------------------------------------
+# On macOS, launchd is the equivalent of systemd — it manages background
+# services (called daemons). Services are configured via plist (property list)
+# XML files placed in /Library/LaunchDaemons/ for system-wide root daemons.
+#
+# We use a Jinja2 template rather than a static file because the plist needs
+# to reference the correct path to the Python binary inside our venv, which
+# is stored in the ipv6_venv_path variable.
+#
+# "notify: Reload launchd plist" triggers the handler in handlers/main.yml
+# which unloads and reloads the plist if it has changed, so launchd picks up
+# any updates to the configuration.
 
 - name: Deploy launchd plist (templated with venv path)
   template:
@@ -105,8 +274,19 @@
     mode: "0644"
   notify: Reload launchd plist
 
+# -----------------------------------------------------------------------------
+# Load the launchd service
+# -----------------------------------------------------------------------------
+# "launchctl load -w" loads the plist and starts the daemon immediately,
+# and also marks it to start automatically at boot.
+#
+# "creates: ..." is used as a rough idempotency guard to skip this task if
+# the service appears to already be running. Note: launchctl exits non-zero
+# if the service is already loaded, so "ignore_errors: true" prevents that
+# from being treated as a failure.
+
 - name: Ensure launchd service is loaded
   command: launchctl load -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
   args:
-    creates: /var/run/au.hosteng.ipv6-dns-watch.pid  # rough idempotency guard
-  ignore_errors: true  # launchctl exits non-zero if already loaded — that's fine
+    creates: /var/run/au.hosteng.ipv6-dns-watch.pid
+  ignore_errors: true
