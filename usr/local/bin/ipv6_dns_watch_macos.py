@@ -64,8 +64,9 @@ def run_sync():
         return
     LAST_RUN = now
 
-    cmd = [SYNC_SCRIPT, "--config-url", CONFIG_PATH, "-v"]
-    # Remove "-v" once debugging is complete
+    cmd = [SYNC_SCRIPT, "--config-url", CONFIG_PATH]
+    # You can add "-v" here if you want more verbose logging:
+    # cmd.append("-v")
 
     try:
         subprocess.run(cmd, check=False)

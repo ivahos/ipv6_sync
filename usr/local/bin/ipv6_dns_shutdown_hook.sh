@@ -31,7 +31,7 @@ log() {
 
 shutdown_cleanup() {
     log "SIGTERM received — running DNS cleanup"
-    "$VENV_PYTHON" "$SYNC_SCRIPT" --config-url "$CONFIG_URL" --shutdown -v >> "$LOG" 2>&1
+    "$VENV_PYTHON" "$SYNC_SCRIPT" --config-url "$CONFIG_URL" --shutdown >> "$LOG" 2>&1
 
     # Clear the state file as a safety net in case the sync script was
     # killed by launchd before it could do so itself. Without this, the
