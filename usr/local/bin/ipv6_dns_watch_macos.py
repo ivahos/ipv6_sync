@@ -115,6 +115,31 @@ def handle_sigterm(signum, frame):
     global SHUTTING_DOWN
     SHUTTING_DOWN = True
     run_shutdown()
+
+    # Verify network is still up after cleanup by pinging the DNS server.
+    # This helps diagnose whether nsupdate could actually reach the server
+    # during shutdown, or whether the network was already gone.
+    try:
+        import re as _re
+        # Extract server IP from cached config if available
+        _server = None
+        _cache = os.path.expanduser("~/.cache/ipv6_dns_sync/cached_config.json")
+        if os.path.exists(_cache):
+            import json as _json
+            with open(_cache) as _f:
+                _server = _json.load(_f).get("server")
+        if _server:
+            _result = subprocess.run(
+                ["ping", "-c", "1", "-t", "3", _server],
+                capture_output=True, text=True
+            )
+            if _result.returncode == 0:
+                log(f"network check: DNS server {_server} is reachable after cleanup ✓")
+            else:
+                log(f"network check: DNS server {_server} is NOT reachable after cleanup ✗")
+    except Exception as e:
+        log(f"network check failed: {e}")
+
     # Stop the CFRunLoop so CFRunLoopRun() returns and main() can exit cleanly
     CFRunLoopStop(CFRunLoopGetCurrent())
     # Exit immediately after cleanup — don't process any more events
