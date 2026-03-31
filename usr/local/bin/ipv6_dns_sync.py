@@ -757,10 +757,25 @@ def build_nsupdate_script(
                 )
 
     # ----- Forward AAAA updates (safe mode): always delete all AAAA for the host, then re-add current -----
-    # Rationale: after upstream prefix changes, stale AAAA may remain even if our state file missed them.
+    #
+    # IMPORTANT: This "delete all, then re-add current" approach is intentional and should not be
+    # changed to a simple diff-based add/remove. Here is why:
+    #
+    # A dangling PTR record (reverse DNS pointing to an address that no longer exists) is mostly
+    # harmless — reverse lookups simply fail silently. However, a dangling AAAA record is actively
+    # harmful: DNS clients will attempt to connect to the stale address first, and TCP connection
+    # attempts to a dead IPv6 address wait for the full connection timeout (often 20+ seconds)
+    # before falling back to another address or IPv4. This causes random, hard-to-diagnose
+    # connectivity delays that have been observed in practice.
+    #
+    # SLAAC address churn (privacy extensions, prefix changes from ISP renumbering) means stale
+    # AAAA records accumulate more readily than with stable IPv4 DHCP assignments. The safe mode
+    # approach guarantees that after every sync the DNS state exactly matches the host's current
+    # addresses, with no possibility of stale records surviving.
+    #
     # For each forward domain we touch, we do:
-    #   update delete <fqdn> AAAA
-    #   update add <fqdn> <ttl> AAAA <addr>   (for each current address mapped to that domain)
+    #   update delete <fqdn> AAAA        (removes ALL existing AAAA records for this name)
+    #   update add <fqdn> <ttl> AAAA <addr>   (re-adds only the current addresses)
     #
     # Domains are derived the same way as before: if the address matches a reverse-zone entry with
     # ptr_domain, use that as the forward domain; otherwise fall back to the default 'domain'.
