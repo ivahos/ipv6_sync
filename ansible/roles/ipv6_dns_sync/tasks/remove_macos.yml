@@ -1,0 +1,63 @@
+---
+# =============================================================================
+# tasks/remove_macos.yml — Remove ipv6_dns_sync from a macOS host
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Unload the launchd service
+# -----------------------------------------------------------------------------
+# We unload the service before removing its files.
+# "launchctl unload -w" stops the daemon and marks it not to start at boot.
+# "failed_when: false" makes this safe to run even if the service was never
+# loaded — launchctl exits non-zero if the plist isn't loaded.
+
+- name: Unload launchd service
+  command: launchctl unload -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+  failed_when: false
+
+# -----------------------------------------------------------------------------
+# Remove the launchd plist
+# -----------------------------------------------------------------------------
+
+- name: Remove launchd plist
+  file:
+    path: /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the macOS watcher script
+# -----------------------------------------------------------------------------
+
+- name: Remove ipv6_dns_watch_macos.py
+  file:
+    path: /usr/local/bin/ipv6_dns_watch_macos.py
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the TSIG key file
+# -----------------------------------------------------------------------------
+
+- name: Remove TSIG key file
+  file:
+    path: "{{ ipv6_keyfile_macos }}"
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the cache directory
+# -----------------------------------------------------------------------------
+
+- name: Remove cache directory
+  file:
+    path: "{{ ipv6_cache_dir_macos }}"
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the Python venv
+# -----------------------------------------------------------------------------
+# The venv directory contains the PyObjC packages installed for the watcher.
+# Removing it frees up the disk space and leaves no trace of the installation.
+
+- name: Remove Python venv
+  file:
+    path: "{{ ipv6_venv_path }}"
+    state: absent

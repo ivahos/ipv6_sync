@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# site-remove.yml — Removal playbook for ipv6_dns_sync
+# =============================================================================
+#
+# Stops and removes the ipv6_dns_sync installation from one or more hosts.
+# Installed packages (bind9-dnsutils, bind) are left in place as they may
+# be used by other services on the host.
+#
+# Always use --limit to target a specific host — you don't want to
+# accidentally remove the service from all your hosts at once!
+#
+# Usage:
+#   Remove from a single host:
+#     ansible-playbook site-remove.yml --limit myhostname
+#
+#   Dry run (show what would be removed without actually removing anything):
+#     ansible-playbook site-remove.yml --limit myhostname --check
+
+- name: Remove ipv6_dns_sync
+  hosts: all
+  become: true
+
+  roles:
+    - role: ipv6_dns_sync
+      tasks_from: remove.yml

@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# tasks/remove_linux.yml — Remove ipv6_dns_sync from a Linux host
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stop and disable the systemd service
+# -----------------------------------------------------------------------------
+# We stop and disable the service before removing its files. Trying to
+# remove a running service's files is messy and can leave systemd in a
+# confused state.
+#
+# "state: stopped" stops the service if it is running.
+# "enabled: false" prevents it from starting at boot.
+# "failed_when: false" means don't fail if the service doesn't exist —
+# this makes the task safe to run even if the service was never installed.
+
+- name: Stop and disable ipv6-dns-watch service
+  systemd:
+    name: ipv6-dns-watch
+    state: stopped
+    enabled: false
+  failed_when: false
+
+# -----------------------------------------------------------------------------
+# Remove the systemd service unit file
+# -----------------------------------------------------------------------------
+# "state: absent" deletes the file if it exists, does nothing if it doesn't.
+# After removing a unit file systemd should be reloaded so it no longer
+# knows about the service.
+
+- name: Remove systemd service file
+  file:
+    path: /etc/systemd/system/ipv6-dns-watch.service
+    state: absent
+  notify: Reload systemd
+
+# -----------------------------------------------------------------------------
+# Remove the watcher script
+# -----------------------------------------------------------------------------
+
+- name: Remove ipv6_dns_watch_linux.sh
+  file:
+    path: /usr/local/bin/ipv6_dns_watch_linux.sh
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the TSIG key file
+# -----------------------------------------------------------------------------
+
+- name: Remove TSIG key file
+  file:
+    path: "{{ ipv6_keyfile_linux }}"
+    state: absent
+
+# -----------------------------------------------------------------------------
+# Remove the cache directory
+# -----------------------------------------------------------------------------
+# "state: absent" on a directory removes it and all its contents recursively,
+# equivalent to "rm -rf". This removes state.json and cached_config.json.
+
+- name: Remove cache directory
+  file:
+    path: "{{ ipv6_cache_dir_linux }}"
+    state: absent

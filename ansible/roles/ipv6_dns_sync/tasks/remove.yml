@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# tasks/remove.yml — Remove ipv6_dns_sync from a host
+# =============================================================================
+#
+# This file removes everything installed by the playbook, but deliberately
+# leaves behind any packages that were installed (bind9-dnsutils on Linux,
+# bind via Homebrew on macOS) since those may be used by other things on
+# the host.
+#
+# What is removed:
+#   - The watcher service (stopped, disabled and definition deleted)
+#   - All scripts in /usr/local/bin
+#   - The TSIG key file
+#   - The cache directory (state and cached config)
+#   - The Python venv (macOS only)
+#
+# Usage:
+#   ansible-playbook site-remove.yml --limit myhostname
+
+# -----------------------------------------------------------------------------
+# Branch to OS-specific remove tasks
+# -----------------------------------------------------------------------------
+
+- name: Include Linux remove tasks
+  include_tasks: remove_linux.yml
+  when: ansible_system == "Linux"
+
+- name: Include macOS remove tasks
+  include_tasks: remove_macos.yml
+  when: ansible_system == "Darwin"
+
+# -----------------------------------------------------------------------------
+# Remove shared files (both platforms)
+# -----------------------------------------------------------------------------
+# The sync script is the same on both platforms so we remove it here
+# rather than duplicating the task in both OS-specific files.
+
+- name: Remove ipv6_dns_sync.py
+  file:
+    path: /usr/local/bin/ipv6_dns_sync.py
+    state: absent
