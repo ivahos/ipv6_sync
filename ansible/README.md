@@ -6,7 +6,6 @@ Automates deployment of the IPv6 DNS sync watcher to macOS and Linux (Debian/Ubu
 
 On the machine running Ansible (your local machine):
 - Ansible 2.12+: `pip install ansible`
-- For macOS targets, the `community.general` collection: `ansible-galaxy collection install community.general`
 
 On target hosts:
 - SSH access with a key already set up

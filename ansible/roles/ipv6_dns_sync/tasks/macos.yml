@@ -17,7 +17,6 @@
 # -----------------------------------------------------------------------------
 # Several steps below require internet access:
 #   - Xcode Command Line Tools are downloaded from Apple's servers
-#   - Homebrew packages are downloaded from the internet
 #   - PyObjC packages are downloaded from PyPI
 #
 # We check this upfront with a single ping so the playbook fails immediately
@@ -31,7 +30,7 @@
 # "failed_when: internet_check.rc != 0" means fail the task if ping returns
 # a non-zero exit code (i.e. the host is not reachable).
 
-- name: Check internet connectivity (required for Xcode CLT and Homebrew)
+- name: Check internet connectivity (required for Xcode CLT and PyObjC packages)
   command: ping -c 1 1.1.1.1
   register: internet_check
   changed_when: false
@@ -122,25 +121,6 @@
     path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
     state: absent
   when: xcode_clt.rc != 0
-
-# =============================================================================
-# DEPENDENCIES
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# Install nsupdate via Homebrew
-# -----------------------------------------------------------------------------
-# nsupdate is the tool that sends DNS update requests to the DNS server.
-# On macOS it comes as part of the "bind" Homebrew package.
-# This assumes Homebrew is already installed on the target Mac.
-# The community.general.homebrew module is provided by the
-# community.general Ansible collection (install with:
-# ansible-galaxy collection install community.general).
-
-- name: Install nsupdate (via Homebrew bind)
-  community.general.homebrew:
-    name: bind
-    state: present
 
 # =============================================================================
 # PYTHON VIRTUAL ENVIRONMENT
