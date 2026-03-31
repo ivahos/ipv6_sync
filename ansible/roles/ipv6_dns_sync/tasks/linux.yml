@@ -1,0 +1,47 @@
+# roles/ipv6_dns_sync/tasks/linux.yml
+#
+# Tasks specific to Linux (Debian/Ubuntu) hosts.
+
+---
+
+- name: Install nsupdate (bind9-dnsutils)
+  apt:
+    name: bind9-dnsutils
+    state: present
+    update_cache: true
+
+- name: Create cache directory
+  file:
+    path: "{{ ipv6_cache_dir_linux }}"
+    state: directory
+    owner: root
+    mode: "0700"
+
+- name: Deploy TSIG key file
+  template:
+    src: mykey.j2
+    dest: "{{ ipv6_keyfile_linux }}"
+    owner: root
+    mode: "0600"  # readable by root only — contains the TSIG secret
+
+- name: Copy ipv6_dns_watch_linux.sh to /usr/local/bin
+  copy:
+    src: "{{ role_path }}/../../usr/local/bin/ipv6_dns_watch_linux.sh"
+    dest: /usr/local/bin/ipv6_dns_watch_linux.sh
+    owner: root
+    mode: "0755"
+
+- name: Copy systemd service file
+  copy:
+    src: "{{ role_path }}/../../etc/systemd/system/ipv6-dns-watch.service"
+    dest: /etc/systemd/system/ipv6-dns-watch.service
+    owner: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable and start ipv6-dns-watch service
+  systemd:
+    name: ipv6-dns-watch
+    enabled: true
+    state: started
+    daemon_reload: true

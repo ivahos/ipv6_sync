@@ -1,0 +1,25 @@
+# roles/ipv6_dns_sync/tasks/main.yml
+#
+# Entry point — installs the shared sync script then delegates to the
+# OS-specific task file for the watcher and service setup.
+
+---
+
+# --- Shared: deploy the sync script to all hosts ---
+
+- name: Copy ipv6_dns_sync.py to /usr/local/bin
+  copy:
+    src: "{{ role_path }}/../../usr/local/bin/ipv6_dns_sync.py"
+    dest: /usr/local/bin/ipv6_dns_sync.py
+    owner: root
+    mode: "0755"
+
+# --- Delegate to OS-specific tasks ---
+
+- name: Include Linux tasks
+  include_tasks: linux.yml
+  when: ansible_system == "Linux"
+
+- name: Include macOS tasks
+  include_tasks: macos.yml
+  when: ansible_system == "Darwin"

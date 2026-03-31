@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>au.hosteng.ipv6-dns-watch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ ipv6_venv_path }}/bin/python3</string>
+        <string>/usr/local/bin/ipv6_dns_watch_macos.py</string>
+    </array>
+
+    <!-- Run once at load, then keep running to watch for changes -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/ipv6_dns_watch.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/ipv6_dns_watch.err.log</string>
+</dict>
+</plist>

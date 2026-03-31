@@ -1,0 +1,15 @@
+---
+# site.yml — main playbook for ipv6_dns_sync deployment
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml site.yml
+#
+# To deploy to a single host only:
+#   ansible-playbook -i inventory/hosts.yml site.yml --limit myhostname
+
+- name: Deploy ipv6_dns_sync
+  hosts: all
+  become: true   # run as root (sudo)
+
+  roles:
+    - ipv6_dns_sync

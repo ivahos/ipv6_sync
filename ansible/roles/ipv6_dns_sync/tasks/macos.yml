@@ -1,0 +1,65 @@
+# roles/ipv6_dns_sync/tasks/macos.yml
+#
+# Tasks specific to macOS hosts.
+
+---
+
+- name: Install nsupdate (via Homebrew bind)
+  community.general.homebrew:
+    name: bind
+    state: present
+
+- name: Create venv directory
+  file:
+    path: "{{ ipv6_venv_path }}"
+    state: directory
+    owner: root
+    mode: "0755"
+
+- name: Create Python venv for macOS watcher
+  command: "{{ ipv6_homebrew_python }} -m venv {{ ipv6_venv_path }}"
+  args:
+    creates: "{{ ipv6_venv_path }}/bin/python3"  # skip if venv already exists
+
+- name: Install PyObjC packages into venv
+  pip:
+    name:
+      - pyobjc-framework-SystemConfiguration
+      - pyobjc-framework-CoreFoundation
+    virtualenv: "{{ ipv6_venv_path }}"
+    state: present
+
+- name: Create cache directory
+  file:
+    path: "{{ ipv6_cache_dir_macos }}"
+    state: directory
+    owner: root
+    mode: "0700"
+
+- name: Deploy TSIG key file
+  template:
+    src: mykey.j2
+    dest: "{{ ipv6_keyfile_macos }}"
+    owner: root
+    mode: "0600"  # readable by root only — contains the TSIG secret
+
+- name: Copy ipv6_dns_watch_macos.py to /usr/local/bin
+  copy:
+    src: "{{ role_path }}/../../usr/local/bin/ipv6_dns_watch_macos.py"
+    dest: /usr/local/bin/ipv6_dns_watch_macos.py
+    owner: root
+    mode: "0755"
+
+- name: Deploy launchd plist (templated with venv path)
+  template:
+    src: au.hosteng.ipv6-dns-watch.plist.j2
+    dest: /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+    owner: root
+    mode: "0644"
+  notify: Reload launchd plist
+
+- name: Ensure launchd service is loaded
+  command: launchctl load -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+  args:
+    creates: /var/run/au.hosteng.ipv6-dns-watch.pid  # rough idempotency guard
+  ignore_errors: true  # launchctl exits non-zero if already loaded — that's fine
