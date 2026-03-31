@@ -13,56 +13,6 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Check SSH connectivity from the Ansible controller to the Mac
-# -----------------------------------------------------------------------------
-# The Homebrew bootstrap script needs to run as a regular user (not root)
-# via SSH from the Ansible controller. We test this first so we can give
-# a clear error message if it fails, rather than a confusing SSH error
-# mid-playbook.
-#
-# "delegate_to: localhost" runs this task on the Ansible controller, not
-# the remote host. We use a simple SSH command to test connectivity.
-#
-# If this fails, the user needs to add their public SSH key to
-# ~/.ssh/authorized_keys on the Mac for their regular user account.
-
-- name: Check SSH connectivity from controller to Mac (needed for Homebrew bootstrap)
-  local_action:
-    module: command
-    cmd: ssh -o BatchMode=yes -o ConnectTimeout=5 {{ ansible_user }}@{{ inventory_hostname }} echo ok
-  register: ssh_check
-  changed_when: false
-  failed_when: ssh_check.rc != 0
-  become: false
-  ignore_errors: true
-
-- name: Fail with helpful message if SSH not working
-  fail:
-    msg: >
-      Cannot SSH to {{ inventory_hostname }} as {{ ansible_user }} without a password.
-      Please add your public SSH key to ~/.ssh/authorized_keys on the Mac and rerun the playbook.
-      You can do this by running on the Mac:
-        mkdir -p ~/.ssh && curl https://github.com/{{ ansible_user }}.keys >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-  when: ssh_check.rc != 0
-
-# -----------------------------------------------------------------------------
-# Bootstrap Homebrew on the Mac
-# -----------------------------------------------------------------------------
-# Homebrew must run as a regular user (not root) so we use local_action to
-# SSH in as the regular user and run the bootstrap script.
-# This installs Homebrew and Python 3, which are needed for the venv.
-# If Homebrew is already installed this step is skipped automatically.
-
-- name: Bootstrap Homebrew and Python on Mac (runs as regular user via SSH)
-  local_action:
-    module: command
-    cmd: ssh {{ ansible_user }}@{{ inventory_hostname }} 'bash -s'
-    stdin: "{{ lookup('file', playbook_dir + '/../scripts/bootstrap-macos.sh') }}"
-  become: false
-  register: brew_bootstrap
-  changed_when: "'already installed' not in brew_bootstrap.stdout"
-
-# -----------------------------------------------------------------------------
 # Check internet connectivity
 # -----------------------------------------------------------------------------
 # Several steps below require internet access:
