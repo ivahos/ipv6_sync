@@ -4,6 +4,14 @@
 
 ---
 
+# --- Preflight checks ---
+
+- name: Check internet connectivity (required for Xcode CLT and Homebrew)
+  command: ping -c 1 1.1.1.1
+  register: internet_check
+  changed_when: false
+  failed_when: internet_check.rc != 0
+
 # --- Xcode Command Line Tools ---
 # Required for /usr/bin/python3 to work (it's a stub without CLT installed).
 # Uses the same headless method as Homebrew.
