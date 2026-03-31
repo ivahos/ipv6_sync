@@ -27,8 +27,20 @@
 
     <!-- Give the watcher enough time to complete DNS cleanup on shutdown
          before launchd forcibly kills it. The cleanup runs nsupdate which
-         needs a moment to connect to the DNS server. -->
+         needs a moment to connect to the DNS server.
+         Must be longer than the timeout in run_shutdown() (25s). -->
     <key>ExitTimeout</key>
     <integer>30</integer>
+
+    <!-- Run at low priority so normal work is not affected -->
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <!-- ProcessType Background tells launchd this is a background service.
+         This affects shutdown ordering — Background services are stopped
+         before the network is torn down, giving us time to reach the DNS
+         server during cleanup. -->
+    <key>ProcessType</key>
+    <string>Background</string>
 </dict>
 </plist>
