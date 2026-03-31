@@ -222,4 +222,4 @@ sudo /usr/local/bin/ipv6_dns_sync.py --config-url https://your-config-url/config
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE) for details.
+GPL v3 — see [LICENSE](LICENSE) for details. Any derivative works must also be released under GPL v3.
