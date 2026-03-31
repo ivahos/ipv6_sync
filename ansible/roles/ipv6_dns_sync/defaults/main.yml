@@ -75,10 +75,8 @@ ipv6_cache_dir_macos: "/var/root/.cache/ipv6_dns_sync"
 # works consistently regardless of which user account is being used.
 ipv6_venv_path: "/opt/ipv6-dns-sync/venv"
 
-# The Python interpreter used to create the venv.
-# On macOS, /usr/bin/python3 is provided by Xcode Command Line Tools.
-# Note: without CLT installed it is just a stub — the macOS tasks handle
-# installing CLT automatically if it is not present.
-# Override this per-host in host_vars if a different Python is needed,
-# for example: ipv6_macos_python: "/usr/local/bin/python3"
-ipv6_macos_python: "/usr/bin/python3"
+# The Homebrew Python interpreter used to create the venv.
+# Homebrew installs Python to /opt/homebrew/bin/python3 on Apple Silicon Macs
+# and /usr/local/bin/python3 on Intel Macs.
+# Override this per-host in host_vars if needed.
+ipv6_homebrew_python: "/opt/homebrew/bin/python3"
