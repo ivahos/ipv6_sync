@@ -967,7 +967,8 @@ def main() -> None:
     # so no records are re-added afterwards. State file is deleted so the next
     # boot is treated as a first run and registers addresses cleanly.
     if args.shutdown:
-        print(f"[ipv6_dns_sync] shutdown: removing all DNS records for {host}", file=sys.stderr)
+        _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{_ts}] [ipv6_dns_sync] shutdown: removing all DNS records for {host}", file=sys.stderr)
         try:
             nsupdate_script = build_nsupdate_script(
                 host=host,
@@ -1008,11 +1009,13 @@ def main() -> None:
         # Clear state file so next boot is treated as a first run
         try:
             Path(state_file).unlink(missing_ok=True)
-            print(f"[ipv6_dns_sync] shutdown: state file cleared", file=sys.stderr)
+            _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{_ts}] [ipv6_dns_sync] shutdown: state file cleared", file=sys.stderr)
         except Exception as e:
             print(f"WARNING: failed to clear state file: {e}", file=sys.stderr)
 
-        print(f"[ipv6_dns_sync] shutdown: DNS cleanup complete", file=sys.stderr)
+        _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{_ts}] [ipv6_dns_sync] shutdown: DNS cleanup complete", file=sys.stderr)
         return
 
     # Verbose banner

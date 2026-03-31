@@ -26,6 +26,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 from SystemConfiguration import (
     SCDynamicStoreCreate,
@@ -39,6 +40,13 @@ from CoreFoundation import (
     kCFRunLoopDefaultMode,
     CFRunLoopRun,
 )
+
+def log(msg):
+    """Write a timestamped message to stderr."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sys.stderr.write(f"[{ts}] [ipv6_dns_watch] {msg}\n")
+    sys.stderr.flush()
+
 
 SYNC_SCRIPT = "/usr/local/bin/ipv6_dns_sync.py"
 CONFIG_PATH = "https://a02.au/ipv6_sync_config/config.json"
@@ -72,7 +80,7 @@ def run_sync():
     try:
         subprocess.run(cmd, check=False)
     except Exception as e:
-        sys.stderr.write(f"[ipv6_dns_watch] sync failed: {e}\n")
+        log(f"sync failed: {e}")
 
 
 def run_shutdown():
@@ -85,7 +93,7 @@ def run_shutdown():
     state — no dangling AAAA records that would cause connectivity delays
     when the machine comes back up or another host tries to reach this one.
     """
-    sys.stderr.write("[ipv6_dns_watch] SIGTERM received — running shutdown cleanup\n")
+    log("SIGTERM received — running shutdown cleanup")
     try:
         subprocess.run(
             [SYNC_SCRIPT, "--config-url", CONFIG_PATH, "--shutdown"],
@@ -93,8 +101,8 @@ def run_shutdown():
             timeout=25,  # launchd's default ExitTimeout is 5s but we set 30s in plist
         )
     except Exception as e:
-        sys.stderr.write(f"[ipv6_dns_watch] shutdown cleanup failed: {e}\n")
-    sys.stderr.write("[ipv6_dns_watch] shutdown cleanup complete\n")
+        log(f"shutdown cleanup failed: {e}")
+    log("shutdown cleanup complete")
 
 
 def handle_sigterm(signum, frame):
@@ -116,7 +124,7 @@ def handle_sigterm(signum, frame):
 def callback(store, changed_keys, info):
     # changed_keys is a CFArray of keys that changed
     try:
-        sys.stderr.write(f"[ipv6_dns_watch] IPv6 change: {list(changed_keys)}\n")
+        log(f"IPv6 change: {list(changed_keys)}")
     except Exception:
         pass
     run_sync()
@@ -161,5 +169,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         run_shutdown()
     except Exception as e:
-        sys.stderr.write(f"[ipv6_dns_watch] fatal error: {e}\n")
+        log(f"fatal error: {e}")
         sys.exit(1)
