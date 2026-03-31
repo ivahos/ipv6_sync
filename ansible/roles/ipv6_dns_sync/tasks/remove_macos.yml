@@ -12,7 +12,7 @@
 # loaded — launchctl exits non-zero if the plist isn't loaded.
 
 - name: Unload launchd service
-  command: launchctl unload -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+  shell: launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist 2>/dev/null || true
   failed_when: false
 
 # -----------------------------------------------------------------------------

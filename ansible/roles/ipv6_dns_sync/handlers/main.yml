@@ -34,7 +34,12 @@
 # handler from loading the new version.
 
 - name: Reload launchd plist
-  command: >
-    launchctl unload /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist &&
-    launchctl load -w /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
+  # Use bootout/bootstrap instead of unload/load — these are the modern
+  # launchctl commands that handle the case where the service may not be
+  # fully started yet. bootout gracefully stops the service if running,
+  # bootstrap starts it fresh from the plist.
+  # "ignore_errors: true" handles the case where the service isn't loaded yet.
+  shell: |
+    launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
   ignore_errors: true
