@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Ivar Hogstad
+# See LICENSE file in the project root for full licence text.
+
 """
 ===============================================================================
 OPERATOR GUIDE — ipv6_dns_sync

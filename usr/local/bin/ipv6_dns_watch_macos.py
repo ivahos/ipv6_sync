@@ -1,4 +1,8 @@
 #!/Users/ivar/.venv/ipv6-dns-sync/bin/python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Ivar Hogstad
+# See LICENSE file in the project root for full licence text.
+
 """
 ipv6_dns_watch.py — macOS IPv6 change watcher
 

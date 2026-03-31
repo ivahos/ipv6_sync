@@ -217,3 +217,9 @@ sudo /usr/local/bin/ipv6_dns_sync.py --config-url https://your-config-url/config
 |----------|------|
 | Linux (watcher) | `/var/log/ipv6_watch.out` and `/var/log/ipv6_watch.err` |
 | macOS (watcher) | `/var/log/ipv6_dns_watch.out.log` and `/var/log/ipv6_dns_watch.err.log` |
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE) for details.

@@ -1,4 +1,8 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Ivar Hogstad
+# See LICENSE file in the project root for full licence text.
+
 # =============================================================================
 # scripts/bootstrap-macos.sh — One-time macOS bootstrap script
 # =============================================================================
