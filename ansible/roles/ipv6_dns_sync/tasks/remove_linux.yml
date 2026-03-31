@@ -29,9 +29,22 @@
 # After removing a unit file systemd should be reloaded so it no longer
 # knows about the service.
 
+- name: Stop and disable shutdown cleanup service
+  systemd:
+    name: ipv6-dns-cleanup
+    state: stopped
+    enabled: false
+  failed_when: false
+
 - name: Remove systemd service file
   file:
     path: /etc/systemd/system/ipv6-dns-watch.service
+    state: absent
+  notify: Reload systemd
+
+- name: Remove shutdown cleanup service file
+  file:
+    path: /etc/systemd/system/ipv6-dns-cleanup.service
     state: absent
   notify: Reload systemd
 

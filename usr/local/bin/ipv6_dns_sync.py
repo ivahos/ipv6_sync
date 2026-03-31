@@ -858,6 +858,7 @@ def main() -> None:
     3) Discover + filter IPv6 addresses according to policy.
     4) Diff against previous state and generate nsupdate directives.
     5) Preview prints changes; normal mode applies them and persists new state.
+    6) Shutdown mode removes all DNS records for this host and clears state.
     """
     ap = argparse.ArgumentParser(description="Sync IPv6 AAAA/PTR records via nsupdate (macOS/Linux)")
     ap.add_argument("--config-url", required=True, help="URL to JSON config (required)")
@@ -867,6 +868,10 @@ def main() -> None:
     ap.add_argument("--keyfile", help="TSIG keyfile for nsupdate/dig")
     ap.add_argument("--ttl", type=int, help="TTL for AAAA/PTR records")
     ap.add_argument("--state-file", help="Override state file path")
+
+    ap.add_argument("--shutdown", action="store_true",
+                    help="Shutdown mode: remove all AAAA and PTR records for this host and clear state file. "
+                         "Run from a shutdown hook to avoid leaving stale records in DNS.")
 
     mx = ap.add_mutually_exclusive_group()
     mx.add_argument("-v", "--verbose", action="store_true",
@@ -932,6 +937,60 @@ def main() -> None:
     except Exception:
         prev_addrs = []
         first_run = True
+
+    # Shutdown mode: remove all DNS records for this host and clear state
+    # Uses the same first-run cleanup logic (AAAA delete across all domains +
+    # AXFR each reverse zone and delete matching PTRs) but with current_addrs=[]
+    # so no records are re-added afterwards. State file is deleted so the next
+    # boot is treated as a first run and registers addresses cleanly.
+    if args.shutdown:
+        print(f"[ipv6_dns_sync] shutdown: removing all DNS records for {host}", file=sys.stderr)
+        try:
+            nsupdate_script = build_nsupdate_script(
+                host=host,
+                domain=domain,
+                server=server,
+                ttl=ttl,
+                keyfile=keyfile,
+                current_addrs=[],        # No addresses to add
+                prev_addrs=prev_addrs,   # Used for PTR cleanup
+                reverse_zones=reverse_zones,
+                first_run=True,          # Triggers full AAAA + AXFR PTR cleanup
+                verbose=verbose_output,
+            )
+        except Exception as e:
+            print(f"ERROR: failed to build shutdown nsupdate script: {e}", file=sys.stderr)
+            sys.exit(2)
+
+        if verbose_output:
+            vprint("----- shutdown nsupdate script -----")
+            vprint(nsupdate_script.rstrip("\n"))
+
+        if keyfile:
+            cmd = ["nsupdate", "-v", "-k", keyfile]
+        else:
+            cmd = ["nsupdate", "-v"]
+
+        cp = subprocess.run(cmd, input=nsupdate_script.encode("utf-8"), capture_output=True)
+        if cp.returncode != 0:
+            stderr = cp.stderr.decode(errors="ignore").strip()
+            stdout = cp.stdout.decode(errors="ignore").strip()
+            print(f"ERROR: nsupdate failed during shutdown with code {cp.returncode}", file=sys.stderr)
+            if stdout:
+                print(stdout, file=sys.stderr)
+            if stderr:
+                print(stderr, file=sys.stderr)
+            sys.exit(1)
+
+        # Clear state file so next boot is treated as a first run
+        try:
+            Path(state_file).unlink(missing_ok=True)
+            print(f"[ipv6_dns_sync] shutdown: state file cleared", file=sys.stderr)
+        except Exception as e:
+            print(f"WARNING: failed to clear state file: {e}", file=sys.stderr)
+
+        print(f"[ipv6_dns_sync] shutdown: DNS cleanup complete", file=sys.stderr)
+        return
 
     # Verbose banner
     if verbose_output:

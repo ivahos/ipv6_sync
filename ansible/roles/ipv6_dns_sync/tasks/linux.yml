@@ -145,3 +145,33 @@
     name: ipv6-dns-watch
     state: started
   no_log: true
+
+# -----------------------------------------------------------------------------
+# Deploy the shutdown cleanup service
+# -----------------------------------------------------------------------------
+# A second systemd service that does nothing on start but runs the sync
+# script with --shutdown on stop (i.e. when the machine shuts down).
+# This removes all AAAA and PTR records for this host from DNS on shutdown,
+# preventing stale records from accumulating over time.
+#
+# Uses a Jinja2 template so the config URL is substituted in from variables.
+
+- name: Deploy shutdown cleanup service
+  template:
+    src: ipv6-dns-cleanup.service.j2
+    dest: /etc/systemd/system/ipv6-dns-cleanup.service
+    owner: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable shutdown cleanup service
+  systemd:
+    name: ipv6-dns-cleanup
+    enabled: true
+    daemon_reload: true
+
+- name: Start shutdown cleanup service
+  systemd:
+    name: ipv6-dns-cleanup
+    state: started
+  no_log: true

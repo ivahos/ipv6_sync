@@ -1,0 +1,26 @@
+[Unit]
+Description=Remove IPv6 DNS records on shutdown
+# Run after the watcher so we know the watcher has had a chance to register
+# addresses before we attempt cleanup. On shutdown, systemd stops services
+# in reverse dependency order, so this service stops (and runs ExecStop)
+# before the network goes down.
+After=ipv6-dns-watch.service network-online.target
+Requires=network-online.target
+
+[Service]
+Type=oneshot
+# RemainAfterExit=yes means systemd considers this service "active" after
+# ExecStart runs. This is the standard pattern for shutdown hooks — the
+# service starts (doing nothing), stays active, then runs ExecStop on shutdown.
+RemainAfterExit=yes
+ExecStart=/bin/true
+# On shutdown, remove all AAAA and PTR records for this host from DNS.
+# --shutdown flag triggers the cleanup logic in the sync script.
+ExecStop=/usr/local/bin/ipv6_dns_sync.py --config-url {{ ipv6_sync_config_url }} --shutdown
+User=root
+Group=root
+# Give it enough time to complete the DNS cleanup before the network goes down
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
