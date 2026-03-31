@@ -1,19 +1,18 @@
 [Unit]
-Description=IPv6 DNS watcher and sync via nsupdate
-Documentation=man:nsupdate(1)
+Description=Watch IPv6 address changes and sync AAAA/PTR via nsupdate
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/ipv6_dns_watch_linux.sh
-Restart=on-failure
-RestartSec=5
 User=root
 Group=root
+Restart=always
+RestartSec=2
 Nice=10
-StandardOutput=append:/var/log/ipv6_sync.out
-StandardError=append:/var/log/ipv6_sync.err
+StandardOutput=append:/var/log/ipv6_watch.out
+StandardError=append:/var/log/ipv6_watch.err
 
 [Install]
 WantedBy=multi-user.target
