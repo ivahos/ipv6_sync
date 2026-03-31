@@ -1,8 +1,10 @@
 # ipv6_sync
 
-Keeps DNS automatically up to date with the IPv6 addresses assigned to a host.
+Keeps DNS continuously in sync with the IPv6 addresses assigned to a host, so that every address on every host always resolves to the correct hostname. This makes network debugging significantly easier — rather than staring at raw IPv6 addresses, tools like `ping`, `traceroute`, `ssh` and log files will show meaningful hostnames.
 
-When a host gets new or changed global IPv6 addresses (e.g. after a prefix change from your ISP), this toolset detects the change and updates the corresponding `AAAA` and `PTR` records in DNS using RFC 2136 dynamic updates (`nsupdate`) authenticated with a TSIG key.
+As a side effect it also handles prefix changes (e.g. when your ISP renumbers), but the primary goal is simply to have clean, reliable forward and reverse DNS for all your hosts at all times.
+
+Both `AAAA` and `PTR` records are kept in sync using RFC 2136 dynamic updates (`nsupdate`) authenticated with a TSIG key.
 
 Supports **macOS** and **Linux** (Debian/Ubuntu).
 
