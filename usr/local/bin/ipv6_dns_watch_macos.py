@@ -108,6 +108,11 @@ def main():
     # Log startup so we can clearly see each time the watcher starts
     log("starting up")
 
+    # Brief wait before initial sync to allow the network stack to fully
+    # initialise after boot. Without this, nsupdate may fail with
+    # "dns_request_createvia: not implemented" if the network isn't ready.
+    time.sleep(5)
+
     # Do an initial sync on startup, so DNS matches current IPs
     run_sync()
 

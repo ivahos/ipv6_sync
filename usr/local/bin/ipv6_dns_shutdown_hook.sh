@@ -15,13 +15,14 @@
 # the trap fires and runs the sync script with --shutdown to remove all AAAA
 # and PTR records from DNS before the machine goes down.
 #
-# This approach is more reliable than catching SIGTERM in the Python watcher
-# because bash signal traps are handled immediately and don't interact with
-# a CFRunLoop.
+# The state file is also cleared here as a safety net, in case the sync
+# script is killed by launchd before it can clear it itself. This ensures
+# the next boot treats itself as a first run and re-registers all addresses.
 
 SYNC_SCRIPT="/usr/local/bin/ipv6_dns_sync.py"
 CONFIG_URL="https://a02.au/ipv6_sync_config/config.json"
 VENV_PYTHON="/opt/ipv6-dns-sync/venv/bin/python3"
+STATE_FILE="/var/root/.cache/ipv6_dns_sync/state.json"
 LOG="/var/log/ipv6_dns_shutdown.err.log"
 
 log() {
@@ -31,6 +32,16 @@ log() {
 shutdown_cleanup() {
     log "SIGTERM received — running DNS cleanup"
     "$VENV_PYTHON" "$SYNC_SCRIPT" --config-url "$CONFIG_URL" --shutdown >> "$LOG" 2>&1
+
+    # Clear the state file as a safety net in case the sync script was
+    # killed by launchd before it could do so itself. Without this, the
+    # next boot would treat itself as a normal run rather than a first run,
+    # and would not re-register addresses that were removed during shutdown.
+    if [ -f "$STATE_FILE" ]; then
+        rm -f "$STATE_FILE"
+        log "state file cleared (safety net)"
+    fi
+
     log "DNS cleanup complete"
     exit 0
 }
