@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>au.hosteng.ipv6-dns-shutdown</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ ipv6_venv_path }}/bin/python3</string>
+        <string>/usr/local/bin/ipv6_dns_sync.py</string>
+        <string>--config-url</string>
+        <string>{{ ipv6_sync_config_url }}</string>
+        <string>--shutdown</string>
+    </array>
+
+    <!-- RunAtShutdown: run this job when the system is shutting down.
+         This is the reliable way to run cleanup tasks on macOS shutdown,
+         as SIGTERM delivery to KeepAlive daemons is not guaranteed on
+         subsequent shutdowns after the first. -->
+    <key>RunAtShutdown</key>
+    <true/>
+
+    <!-- RunAtLoad: also run once at load time to verify the script works.
+         Without this, launchd won't load a RunAtShutdown-only plist. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/ipv6_dns_shutdown.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/ipv6_dns_shutdown.err.log</string>
+
+    <!-- Give the script enough time to complete DNS cleanup -->
+    <key>ExitTimeout</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

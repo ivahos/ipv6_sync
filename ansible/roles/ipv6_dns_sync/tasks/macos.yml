@@ -255,6 +255,27 @@
   notify: Reload launchd plist
 
 # -----------------------------------------------------------------------------
+# Deploy the shutdown cleanup plist
+# -----------------------------------------------------------------------------
+# A separate one-shot launchd job that runs the sync script with --shutdown
+# when the system shuts down. This is more reliable than catching SIGTERM
+# in the watcher daemon, as launchd does not guarantee SIGTERM delivery to
+# KeepAlive daemons on subsequent shutdowns after the first.
+
+- name: Deploy shutdown cleanup plist
+  template:
+    src: au.hosteng.ipv6-dns-shutdown.plist.j2
+    dest: /Library/LaunchDaemons/au.hosteng.ipv6-dns-shutdown.plist
+    owner: root
+    mode: "0644"
+
+- name: Load shutdown cleanup plist
+  shell: |
+    launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-shutdown.plist 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-shutdown.plist
+  ignore_errors: true
+
+# -----------------------------------------------------------------------------
 # Load the launchd service
 # -----------------------------------------------------------------------------
 # Uses the modern launchctl bootstrap/bootout commands instead of the
