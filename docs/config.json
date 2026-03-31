@@ -1,24 +1,24 @@
 {
   "reverse_zones": [
-    "2401:dc20:2344::/48",
-    { "cidr": "2401:dc20:2344:1::/64",    "domain": "ih36.net" },
-    { "cidr": "2401:dc20:2344:2::/64",    "domain": "wireguard.au" },
-    { "cidr": "2401:dc20:2344:4::/64",    "domain": "ih36.net" },
-    { "cidr": "2401:dc20:2344:200::/56",  "domain": "ivar.au" },
-    { "cidr": "2401:dc20:2344:cafe::/64", "domain": "wireguard.au" },
-    { "cidr": "2401:dc20:2344:dead::/64", "domain": "ulab.au" }
+    "1111:2222:3333::/48",
+    { "cidr": "1111:2222:3333:1::/64",    "domain": "example.net" },
+    { "cidr": "1111:2222:3333:2::/64",    "domain": "vpn.example.net" },
+    { "cidr": "1111:2222:3333:4::/64",    "domain": "example.net" },
+    { "cidr": "1111:2222:3333:200::/56",  "domain": "example.com" },
+    { "cidr": "1111:2222:3333:cafe::/64", "domain": "vpn.example.com" },
+    { "cidr": "1111:2222:3333:dead::/64", "domain": "lab.example.com" }
   ],
 
-  "server": "192.168.4.214",
+  "server": "192.168.1.53",
   "keyfile": "~/.mykey",
   "_keyfile_note": "On macOS root home is /var/root, on Linux it is /root. Place .mykey accordingly.",
-  "domain": "ih36.net",
+  "domain": "example.net",
   "ttl": 120,
   "state_file": "~/.cache/ipv6_dns_sync/state.json",
   "cache_file": "~/.cache/ipv6_dns_sync/cached_config.json",
 
   "include_prefixes": [
-    "2401:dc20:2344:"
+    "1111:2222:3333:"
   ],
   "exclude_prefixes": []
 }

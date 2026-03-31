@@ -89,17 +89,17 @@ ipv6_dns_sync.py (macOS/Linux)
 Config example (Linux):
 
 {
-  "server": "192.168.4.214",
+  "server": "192.168.1.53",
   "keyfile": "/var/root/.mykey",
   "ttl": 120,
-  "host": "neptun",
-  "domain": "ih36.net",
+  "host": "myhost",
+  "domain": "example.net",
 
   "include_link_local": false,
 
   "allowed_prefixes": [
-    "2403:5806:f52c:1::/64",
-    "2403:5806:f52c:2::/64"
+    "1111:2222:3333:1::/64",
+    "1111:2222:3333:2::/64"
   ],
 
   "ignored_prefixes": [
@@ -108,14 +108,14 @@ Config example (Linux):
 
   "reverse_zones": [
     {
-      "cidr": "2403:5806:f52c:1::/64",
+      "cidr": "1111:2222:3333:1::/64",
       "zone": "1.c.5.f.6.0.8.5.3.0.4.2.ip6.arpa.",
-      "ptr_domain": "ih36.net"
+      "ptr_domain": "example.net"
     },
     {
-      "cidr": "2403:5806:f52c:2::/64",
+      "cidr": "1111:2222:3333:2::/64",
       "zone": "2.c.5.f.6.0.8.5.3.0.4.2.ip6.arpa.",
-      "ptr_domain": "ulab.au"
+      "ptr_domain": "lab.example.com"
     }
   ],
 
@@ -330,15 +330,15 @@ def _get_reverse_zone_name(rz: "ReverseZone") -> str:
 class ReverseZone:
     network: IPv6Network
     zone: str
-    ptr_domain: Optional[str]  # e.g. ih36.net or ulab.au
+    ptr_domain: Optional[str]  # e.g. example.net or lab.example.com
 
 
 
 def parse_reverse_zones(cfg: Dict[str, Any]) -> List[ReverseZone]:
     """
     Parse the 'reverse_zones' config, accepting either:
-      - simple strings: "2403:5806:f52c::/48"
-      - objects: { "cidr": "...", "domain": "ih36.net" }
+      - simple strings: "1111:2222:3333::/48"
+      - objects: { "cidr": "...", "domain": "example.net" }
         (also accepts "prefix" instead of "cidr", and "ptr_domain" instead of "domain")
 
     The reverse zone name is derived automatically from the CIDR via ipv6_prefix_to_arpa().
@@ -368,10 +368,10 @@ def parse_reverse_zones(cfg: Dict[str, Any]) -> List[ReverseZone]:
 
 def ipv6_prefix_to_arpa(prefix: IPv6Network) -> str:
     """
-    Convert e.g. 2403:5806:f52c:1::/64 to a normalized ip6.arpa zone.
+    Convert e.g. 1111:2222:3333:1::/64 to a normalized ip6.arpa zone.
 
     1) Expand and strip colons:
-       2403:5806:f52c:1::  ->  24035806f52c0001...
+       1111:2222:3333:1::  ->  24035806f52c0001...
     2) Take the bits up to prefix length and then nibble-align.
     """
     if not isinstance(prefix, IPv6Network):
@@ -569,7 +569,7 @@ def get_ipv6_addresses_linux(cfg: Dict[str, Any], verbose: bool) -> List[str]:
 
     and parse lines of the form:
 
-        inet6 2403:5806:f52c:1::1234/64 scope global dynamic
+        inet6 1111:2222:3333:1::1234/64 scope global dynamic
 
     Link-local addresses (fe80::/10) are ignored, as are tentative,
     deprecated, or duplicate addresses; any remaining addresses are
@@ -591,7 +591,7 @@ def get_ipv6_addresses_linux(cfg: Dict[str, Any], verbose: bool) -> List[str]:
         if len(parts) < 2:
             continue
 
-        # parts[1] is like "2403:5806:f52c:1::1234/64"
+        # parts[1] is like "1111:2222:3333:1::1234/64"
         addr_cidr = parts[1]
         addr = addr_cidr.split("/", 1)[0]
 
@@ -698,7 +698,7 @@ def build_nsupdate_script(
 
     # We will collect forward and reverse operations, then emit them
     # in grouped server/send blocks.
-    forward_ops: Dict[str, List[str]] = {}   # key: forward domain (ih36.net, ivar.au, ...)
+    forward_ops: Dict[str, List[str]] = {}   # key: forward domain (example.net, example.com, ...)
     reverse_ops: Dict[str, List[str]] = {}   # key: ip6.arpa zone name
 
     # ----- First-run: AXFR reverse zones and delete stale PTRs for this host -----
