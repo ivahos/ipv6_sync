@@ -92,6 +92,11 @@ def run_shutdown():
     and running the cleanup before exiting, we ensure DNS is left in a clean
     state — no dangling AAAA records that would cause connectivity delays
     when the machine comes back up or another host tries to reach this one.
+
+    During shutdown, DNS resolution may already be down even though the network
+    is still up at the IP level. We therefore pass --config-url but the sync
+    script will automatically fall back to the cached config if the URL cannot
+    be resolved.
     """
     log("SIGTERM received — running shutdown cleanup")
     try:

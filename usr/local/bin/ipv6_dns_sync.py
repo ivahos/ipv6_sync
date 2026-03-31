@@ -285,7 +285,10 @@ def load_cached_config_only():
     - Keeps syncing behavior stable using the last-known-good config.
     """
     possible_paths = [
-        Path("~/.cache/ipv6_dns_sync/config.json").expanduser(),
+        Path("~/.cache/ipv6_dns_sync/cached_config.json").expanduser(),
+        Path("/var/root/.cache/ipv6_dns_sync/cached_config.json"),  # macOS root
+        Path("/root/.cache/ipv6_dns_sync/cached_config.json"),      # Linux root
+        Path("~/.cache/ipv6_dns_sync/config.json").expanduser(),    # legacy name
     ]
 
     for path in possible_paths:
