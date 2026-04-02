@@ -314,3 +314,12 @@
     line: 'UseDNS yes'
     state: present
   notify: Reload sshd (macOS)
+
+- name: Set VerifyHostKeyDNS yes in ssh_config
+  # Same rationale as linux.yml -- use SSHFP records to verify host keys
+  # without breaking known_hosts fallback for hosts without SSHFP records.
+  lineinfile:
+    path: /etc/ssh/ssh_config
+    regexp: '^#?\s*VerifyHostKeyDNS'
+    line: '    VerifyHostKeyDNS yes'
+    state: present

@@ -263,9 +263,26 @@
 # existing sessions (reload re-reads the config without killing connections).
 
 - name: Set UseDNS yes in sshd_config
+  # UseDNS yes makes sshd perform a reverse DNS lookup on connecting clients
+  # to verify their hostname matches their IP. With ipv6_dns_sync keeping PTR
+  # records current, this always resolves correctly with no login delay.
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?\s*UseDNS'
     line: 'UseDNS yes'
     state: present
   notify: Reload sshd
+
+- name: Set VerifyHostKeyDNS yes in ssh_config
+  # VerifyHostKeyDNS yes tells the SSH client to look up SSHFP records in DNS
+  # and use them to verify host keys. If SSHFP records are found and match,
+  # the host is trusted without a known_hosts prompt. If no SSHFP records are
+  # found, SSH falls back to the normal known_hosts behaviour -- no breakage.
+  # This is the non-strict setting (yes rather than ask) so known_hosts still
+  # works as a fallback for hosts without SSHFP records.
+  # Goes in ssh_config (client config) not sshd_config (server config).
+  lineinfile:
+    path: /etc/ssh/ssh_config
+    regexp: '^#?\s*VerifyHostKeyDNS'
+    line: '    VerifyHostKeyDNS yes'
+    state: present
