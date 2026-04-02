@@ -3,20 +3,32 @@
 # roles/raspberry_pi/tasks/main.yml — Raspberry Pi NVMe boot preparation
 # =============================================================================
 #
-# This role prepares a Raspberry Pi to boot from NVMe instead of SD card.
-# It is safe to run repeatedly — every destructive step is guarded by a
+# This role handles two distinct situations depending on how the Pi is booted:
+#
+#   Booted from SD card (root on mmcblkX):
+#     Full NVMe preparation sequence runs -- converts the NVMe root partition
+#     from ext4 to btrfs, updates boot config, installs ipv6_dns_sync into
+#     the chroot, and leaves the machine ready to shut down and boot from NVMe.
+#
+#   Booted from NVMe (root NOT on mmcblkX):
+#     The Pi is already running from its NVMe drive. In this case the role
+#     skips all NVMe preparation and falls through to linux.yml, performing
+#     a normal ipv6_dns_sync installation on the live running system.
+#
+# It is safe to run repeatedly -- every destructive step is guarded by a
 # condition that checks whether the work is already done.
 #
-# PRECONDITION:
-#   The Pi must be booted from an SD card. The NVMe is assumed to contain
-#   a Raspberry Pi OS image with the standard two-partition layout:
+# PRECONDITION (SD boot path only):
+#   The NVMe is assumed to contain a Raspberry Pi OS image with the standard
+#   two-partition layout:
 #     /dev/nvme0n1p1  FAT32   boot partition  (mounted at /boot/firmware)
 #     /dev/nvme0n1p2  ext4    root partition  (will be converted to btrfs)
 #
 # FULL SEQUENCE:
-#   Phase 1 — Detection
-#     1a. Confirm root filesystem is on an SD card (mmcblkX device)
-#     1b. Confirm /dev/nvme0n1 exists
+#   Phase 1 -- Detection
+#     1a. Detect whether root filesystem is on an SD card (mmcblkX device)
+#     1b. If NOT booted from SD: run linux.yml directly and stop here
+#     1c. Confirm /dev/nvme0n1 exists
 #
 #   Phase 2 — NVMe filesystem preparation (skipped if already btrfs)
 #     2a. Install btrfs-progs
@@ -60,12 +72,13 @@
 
 
 # =============================================================================
-# PHASE 1 — Detection
+# PHASE 1 -- Detection
 # =============================================================================
 
 - name: Get root filesystem device
   # Read /proc/mounts, find the root mount point, return its device.
   # On an SD-booted Pi this will be something like /dev/mmcblk0p2.
+  # On a Pi already running from NVMe it will be something like /dev/nvme0n1p2.
   shell: awk '$2 == "/" {print $1}' /proc/mounts
   register: root_device_raw
   changed_when: false
@@ -78,23 +91,43 @@
 
 - name: Report boot device
   debug:
-    msg: "Root device: {{ root_device_raw.stdout }} — booted from SD: {{ booted_from_sd }}"
+    msg: >-
+      Root device: {{ root_device_raw.stdout }}
+      -- booted from SD: {{ booted_from_sd }}
+      {% if not booted_from_sd %}
+      Pi is already running from NVMe -- falling through to normal Linux install.
+      {% endif %}
+
+- name: Run normal Linux install if not booted from SD card
+  # The Pi is already running from its NVMe drive (or some other non-SD device).
+  # There is nothing to convert or migrate -- treat it as a normal Linux host
+  # and install ipv6_dns_sync directly onto the live running system, exactly
+  # as linux.yml would for any other Debian/Ubuntu machine.
+  # include_tasks with a when: condition that is false produces a clean skip
+  # in the Ansible output; no tasks inside linux.yml will run.
+  include_tasks: linux.yml
+  when: not booted_from_sd
 
 - name: Check whether NVMe device exists
   stat:
     path: "{{ nvme_device }}"
   register: nvme_stat
+  when: booted_from_sd
 
 - name: Report NVMe detection result
   debug:
     msg: >-
       {{ nvme_device }}:
-      {% if nvme_stat.stat.exists %}found{% else %}NOT found — all NVMe tasks will be skipped{% endif %}
+      {% if nvme_stat.stat.exists %}found{% else %}NOT found -- all NVMe tasks will be skipped{% endif %}
+  when: booted_from_sd
 
 # Convenience fact used in every subsequent when: clause to keep them short.
+# Only set when booted from SD -- if we fell through to linux.yml above,
+# none of the phases below are reached.
 - name: Set nvme_ready fact
   set_fact:
     nvme_ready: "{{ booted_from_sd and nvme_stat.stat.exists }}"
+  when: booted_from_sd
 
 
 # =============================================================================
