@@ -235,8 +235,16 @@
 
 - name: Reload active NetworkManager connections to apply DNS options
   # nmcli connection up re-applies the connection profile, causing NetworkManager
-  # to regenerate /etc/resolv.conf with the new options. This does not drop
-  # the network connection or the SSH session.
+  # to regenerate /etc/resolv.conf with the new options. The network may drop
+  # very briefly during reload -- the SSH session survives but Ansible may
+  # need to retry the connection. ansible.cfg sets a sufficient retry count.
   command: nmcli connection up "{{ item }}"
   loop: "{{ nm_active_connections.stdout_lines }}"
   when: nm_manages_dns.rc == 0
+
+- name: Wait for network to stabilise after connection reload
+  # Give NetworkManager a moment to finish regenerating resolv.conf and
+  # re-establishing the connection before Ansible sends the next task.
+  pause:
+    seconds: 3
+  when: nm_manages_dns.rc == 0 and nm_active_connections.stdout_lines | length > 0
