@@ -43,3 +43,27 @@
     launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist 2>/dev/null || true
     launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
   ignore_errors: true
+
+# -----------------------------------------------------------------------------
+# Reload sshd (Linux)
+# -----------------------------------------------------------------------------
+# Triggered when sshd_config is changed.
+# "reload" re-reads the config file without dropping existing SSH sessions,
+# so the Ansible connection stays alive through the handler.
+
+- name: Reload sshd
+  systemd:
+    name: sshd
+    state: reloaded
+
+# -----------------------------------------------------------------------------
+# Reload sshd (macOS)
+# -----------------------------------------------------------------------------
+# Triggered when sshd_config is changed on macOS.
+# On macOS sshd is managed by launchd -- we kick it via launchctl.
+# Using kickstart -k (kill and restart) rather than stop/start ensures
+# the config is re-read even if sshd is already running.
+
+- name: Reload sshd (macOS)
+  shell: launchctl kickstart -k system/com.openssh.sshd
+  ignore_errors: true

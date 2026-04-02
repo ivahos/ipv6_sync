@@ -248,3 +248,24 @@
   pause:
     seconds: 3
   when: nm_manages_dns.rc == 0 and nm_active_connections.stdout_lines | length > 0
+
+# -----------------------------------------------------------------------------
+# Configure sshd UseDNS
+# -----------------------------------------------------------------------------
+# UseDNS yes makes sshd perform a reverse DNS lookup on connecting clients
+# to verify their hostname matches their IP. With ipv6_dns_sync keeping PTR
+# records current for all addresses on all interfaces, reverse lookups always
+# resolve correctly so there is no login delay.
+#
+# We use lineinfile to either replace an existing UseDNS line (commented or
+# not) or add it at the end of the file if not present. The sshd service is
+# notified to reload so the change takes effect immediately without dropping
+# existing sessions (reload re-reads the config without killing connections).
+
+- name: Set UseDNS yes in sshd_config
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*UseDNS'
+    line: 'UseDNS yes'
+    state: present
+  notify: Reload sshd

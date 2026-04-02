@@ -298,3 +298,19 @@
     launchctl bootout system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist 2>/dev/null || true
     launchctl bootstrap system /Library/LaunchDaemons/au.hosteng.ipv6-dns-watch.plist
   ignore_errors: true
+
+# -----------------------------------------------------------------------------
+# Configure sshd UseDNS
+# -----------------------------------------------------------------------------
+# Same rationale as linux.yml -- with ipv6_dns_sync keeping PTR records
+# current, reverse DNS lookups on connecting clients always resolve correctly.
+# On macOS the sshd service is managed by launchd under the label
+# com.openssh.sshd -- we restart it via launchctl rather than systemd.
+
+- name: Set UseDNS yes in sshd_config
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*UseDNS'
+    line: 'UseDNS yes'
+    state: present
+  notify: Reload sshd (macOS)
