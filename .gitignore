@@ -1,0 +1,7 @@
+# Local inventory — contains real hostnames, IPs and usernames.
+# Never commit this file. Keep your real inventory local only.
+ansible/inventory/hosts.yml
+
+# host_vars may contain TSIG keys and other secrets.
+# Use ansible-vault to encrypt sensitive values if you need to commit them.
+ansible/inventory/host_vars/
