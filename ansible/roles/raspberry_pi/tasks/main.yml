@@ -366,10 +366,20 @@
   # gdisk converts the existing MBR partition table to GPT in-place,
   # preserving all existing partition entries and their data.
   #
-  # We drive gdisk non-interactively: "w\ny\n" writes the GPT and confirms.
-  # This is idempotent: if the table is already GPT, gdisk opens it as GPT
-  # and writing it again is a no-op.
-  shell: printf 'w\ny\n' | gdisk {{ nvme_device }}
+  # Some disks that were previously GPT and then overwritten with an MBR image
+  # (e.g. by pi-manager) have corrupt/stale GPT remnants. When gdisk detects
+  # this it shows an extra prompt asking whether to use MBR or GPT before
+  # reaching the normal command prompt. We send "1" (use MBR) first to handle
+  # this case, followed by "w" (write GPT) and "y" (confirm). On a clean MBR
+  # disk without stale GPT data the "1" is ignored and only "w\ny\n" takes
+  # effect, so this sequence is safe for both cases.
+  shell: printf '1\nw\ny\n' | gdisk {{ nvme_device }}
+  # gdisk may exit non-zero on disks with corrupt/stale GPT remnants even
+  # when the conversion succeeds. We accept rc=0 (clean conversion) and
+  # rc=5 (completed with warnings about corrupt headers) as both indicate
+  # a successful GPT write. Any other rc is a genuine failure.
+  failed_when: gdisk_result.rc not in [0, 1, 5]
+  register: gdisk_result
   when: nvme_ready and nvme_ptable_type.stdout == 'msdos'
 
 # ---- Grow partition to fill device -----------------------------------------
