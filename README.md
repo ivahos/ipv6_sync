@@ -251,6 +251,11 @@ significantly smaller and writes much faster to a slow SD card or USB stick.
 32GB is more than enough. The boot device is only needed for the migration
 and can be discarded afterwards.
 
+The playbook works with any non-NVMe boot device — SD card (`mmcblk`),
+USB stick (`sda`), or any other external media. It detects the boot device
+by checking whether root is on an NVMe device. If it is, the migration is
+skipped and a normal live install is performed instead.
+
 **NVMe drive:**
 The playbook expects a standard Raspberry Pi OS image written to the NVMe
 by [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (pi-manager),

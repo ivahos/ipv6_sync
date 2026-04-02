@@ -100,47 +100,55 @@
   register: root_device_raw
   changed_when: false
 
-- name: Determine whether booted from SD card
+- name: Determine whether booted from NVMe
+  # We check whether root is on an NVMe device (nvme in the device name)
+  # rather than checking for a specific boot device type (mmcblk for SD).
+  # This is more robust -- the boot device could be an SD card (mmcblk),
+  # a USB stick (sda), or any other non-NVMe device. What matters is whether
+  # we are currently running FROM the NVMe we want to prepare. If we are,
+  # there is nothing to migrate and we fall through to a normal live install.
   set_fact:
-    booted_from_sd: "{{ root_device_raw.stdout
-                        | regex_replace('^/dev/', '')
-                        | regex_search('^mmcblk') is not none }}"
+    booted_from_nvme: "{{ root_device_raw.stdout
+                          | regex_replace('^/dev/', '')
+                          | regex_search('^nvme') is not none }}"
 
 - name: Report boot device
   debug:
     msg: >-
       Root device: {{ root_device_raw.stdout }}
-      -- booted from SD: {{ booted_from_sd }}
-      {% if not booted_from_sd %}
+      -- booted from NVMe: {{ booted_from_nvme }}
+      {% if booted_from_nvme %}
       Pi is already running from NVMe -- falling through to normal Linux install.
+      {% else %}
+      Booted from external device -- proceeding with NVMe preparation.
       {% endif %}
 
-- name: Run normal Linux install if not booted from SD card
+- name: Run normal Linux install if already booted from NVMe
   # The Pi is already running from its NVMe drive. Treat it as a normal Linux
   # host and install ipv6_dns_sync directly onto the live running system.
   # Use role_path to get the absolute path to the tasks directory so this
   # works correctly regardless of where Ansible is invoked from.
   include_tasks: "{{ role_path }}/../ipv6_dns_sync/tasks/linux.yml"
-  when: not booted_from_sd
+  when: booted_from_nvme
 
 - name: Check whether NVMe device exists
   stat:
     path: "{{ nvme_device }}"
   register: nvme_stat
-  when: booted_from_sd
+  when: not booted_from_nvme
 
 - name: Report NVMe detection result
   debug:
     msg: >-
       {{ nvme_device }}:
       {% if nvme_stat.stat.exists %}found{% else %}NOT found -- all NVMe tasks will be skipped{% endif %}
-  when: booted_from_sd
+  when: not booted_from_nvme
 
 # Convenience fact used in every subsequent when: clause to keep them short.
 - name: Set nvme_ready fact
   set_fact:
-    nvme_ready: "{{ booted_from_sd and nvme_stat.stat.exists }}"
-  when: booted_from_sd
+    nvme_ready: "{{ not booted_from_nvme and nvme_stat.stat.exists }}"
+  when: not booted_from_nvme
 
 
 # =============================================================================
