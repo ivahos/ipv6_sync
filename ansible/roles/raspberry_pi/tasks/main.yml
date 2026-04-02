@@ -255,7 +255,16 @@
   # resizepart 2 100% moves the partition 2 end sector to the last usable
   # sector on the disk. The btrfs filesystem still occupies the old smaller
   # size at this point -- it is grown after mounting in Phase 3.
-  command: parted -s {{ nvme_device }} resizepart 2 100%
+  #
+  # On a re-run the btrfs partition may already be mounted (from a previous
+  # partial run). Parted detects this and prints a warning asking for
+  # confirmation, which causes it to exit non-zero when run with -s.
+  # Piping "Yes" via printf suppresses the interactive prompt and forces
+  # parted to proceed regardless of mount state. This is safe because
+  # resizepart only moves the partition table entry -- it does not touch
+  # the filesystem data inside the partition.
+  shell: printf 'Yes
+' | parted ---pretend-input-tty {{ nvme_device }} resizepart 2 100%
   when: nvme_ready
 
 # ---- Optional btrfs check --------------------------------------------------
