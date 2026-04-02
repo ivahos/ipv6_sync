@@ -1,65 +1,84 @@
 ---
 # =============================================================================
-# roles/raspberry_pi/tasks/main.yml — Raspberry Pi specialised setup
+# roles/raspberry_pi/tasks/main.yml — Raspberry Pi NVMe boot preparation
 # =============================================================================
 #
-# This role is applied to hosts in the 'raspberry_pi' inventory group.
-# It handles one specific, optional task: when the Pi is booted from an SD
-# card and an NVMe drive (/dev/nvme0n1) is present, it prepares the NVMe
-# drive for use as a btrfs filesystem.
+# This role prepares a Raspberry Pi to boot from NVMe instead of SD card.
+# It is safe to run repeatedly — every destructive step is guarded by a
+# condition that checks whether the work is already done.
 #
-# The full sequence is:
-#   1. Detect whether we are booted from an SD card (root on mmcblkX)
-#   2. Detect whether /dev/nvme0n1 exists
-#   3. If both are true:
-#      a. Install btrfs-progs (if not already installed)
-#      b. Grow the NVMe partition to fill the entire device (idempotent)
-#      c. Convert the ext4 filesystem on the partition to btrfs (idempotent)
+# PRECONDITION:
+#   The Pi must be booted from an SD card. The NVMe is assumed to contain
+#   a Raspberry Pi OS image with the standard two-partition layout:
+#     /dev/nvme0n1p1  FAT32   boot partition  (mounted at /boot/firmware)
+#     /dev/nvme0n1p2  ext4    root partition  (will be converted to btrfs)
 #
-# SAFETY ASSUMPTIONS:
-#   - The Pi is booted from an SD card, so the NVMe is NOT mounted.
-#     btrfs-convert requires the source filesystem to be unmounted.
-#   - The NVMe has exactly one partition (/dev/nvme0n1p1) containing an
-#     ext4 filesystem. Override nvme_partition in host_vars if different.
-#   - All operations are idempotent: re-running is safe if already done.
+# FULL SEQUENCE:
+#   Phase 1 — Detection
+#     1a. Confirm root filesystem is on an SD card (mmcblkX device)
+#     1b. Confirm /dev/nvme0n1 exists
+#
+#   Phase 2 — NVMe filesystem preparation (skipped if already btrfs)
+#     2a. Install btrfs-progs
+#     2b. Check filesystem type on nvme_root_partition
+#     2c. Grow the root partition to fill the device  (parted + resize2fs)
+#     2d. Convert ext4 -> btrfs                       (btrfs-convert)
+#     2e. Verify the resulting btrfs is healthy        (btrfs check --readonly)
+#
+#   Phase 3 — Mount NVMe under /mnt
+#     3a. Mount nvme_root_partition (btrfs) on /mnt
+#     3b. Mount nvme_boot_partition (FAT32) on /mnt/boot/firmware
+#     3c. Bind-mount /proc /sys /dev /dev/pts into the chroot tree
+#
+#   Phase 4 — Update boot configuration inside the chroot
+#     4a. Get the btrfs UUID of nvme_root_partition
+#     4b. Patch root= and rootfstype= in /mnt/boot/firmware/cmdline.txt
+#     4c. Patch the root entry in /mnt/etc/fstab
+#     4d. Copy /etc/resolv.conf so apt works inside the chroot
+#     4e. Run update-initramfs -u -k all inside chroot
+#
+#   Phase 5 — Install ipv6_dns_sync inside the chroot
+#     5a. Install bind9-dnsutils via apt inside chroot
+#     5b. Create cache directory
+#     5c. Deploy TSIG key file
+#     5d. Copy ipv6_dns_sync.py and ipv6_dns_watch_linux.sh
+#     5e. Copy systemd unit files
+#     5f. Enable both services via systemctl inside chroot
+#         (services are NOT started — the chroot has no running init)
+#
+#   Phase 6 — Clean up
+#     6a. Unmount bind mounts (/dev/pts, /dev, /sys, /proc)
+#     6b. Unmount /mnt/boot/firmware
+#     6c. Unmount /mnt
+#     6d. Print ready-to-shutdown message
 #
 # OVERRIDE VARIABLES (set in inventory/host_vars/<hostname>.yml):
-#   nvme_device:    the NVMe block device   (default: /dev/nvme0n1)
-#   nvme_partition: the partition to prepare (default: /dev/nvme0n1p1)
+#   nvme_device:         block device          (default: /dev/nvme0n1)
+#   nvme_boot_partition: FAT32 boot partition  (default: /dev/nvme0n1p1)
+#   nvme_root_partition: ext4/btrfs root part  (default: /dev/nvme0n1p2)
+#   nvme_chroot:         chroot mount point    (default: /mnt)
 
-# -----------------------------------------------------------------------------
-# Step 1: Detect boot device
-# -----------------------------------------------------------------------------
-# We inspect the root filesystem's device from /proc/mounts and check whether
-# it starts with "mmcblk" — the kernel device name prefix for SD/eMMC cards
-# on Raspberry Pi. If root is on mmcblk, we know we are booted from SD.
+
+# =============================================================================
+# PHASE 1 — Detection
+# =============================================================================
 
 - name: Get root filesystem device
-  # Read /proc/mounts, find the line for the root mount (" / "), and extract
-  # just the device field (first column). The result looks like "/dev/mmcblk0p2"
-  # when booted from SD, or "/dev/nvme0n1p1" if booted from NVMe.
+  # Read /proc/mounts, find the root mount point, return its device.
+  # On an SD-booted Pi this will be something like /dev/mmcblk0p2.
   shell: awk '$2 == "/" {print $1}' /proc/mounts
   register: root_device_raw
   changed_when: false
 
 - name: Determine whether booted from SD card
-  # Strip "/dev/" to get just the kernel device name, then check if it starts
-  # with "mmcblk". We use this fact in every subsequent "when:" condition so
-  # none of the NVMe tasks run if we are booted from NVMe directly.
   set_fact:
-    booted_from_sd: "{{ root_device_raw.stdout | regex_replace('^/dev/', '') | regex_search('^mmcblk') is not none }}"
+    booted_from_sd: "{{ root_device_raw.stdout
+                        | regex_replace('^/dev/', '')
+                        | regex_search('^mmcblk') is not none }}"
 
 - name: Report boot device
   debug:
-    msg: >-
-      Root device: {{ root_device_raw.stdout }}
-      — booted from SD card: {{ booted_from_sd }}
-
-# -----------------------------------------------------------------------------
-# Step 2: Detect NVMe drive
-# -----------------------------------------------------------------------------
-# stat the block device path. If the device doesn't exist, stat fails and
-# "exists" will be false — we use failed_when: false so the play continues.
+    msg: "Root device: {{ root_device_raw.stdout }} — booted from SD: {{ booted_from_sd }}"
 
 - name: Check whether NVMe device exists
   stat:
@@ -69,150 +88,402 @@
 - name: Report NVMe detection result
   debug:
     msg: >-
-      NVMe device {{ nvme_device }}:
-      {% if nvme_stat.stat.exists %}found{% else %}not found — skipping NVMe tasks{% endif %}
+      {{ nvme_device }}:
+      {% if nvme_stat.stat.exists %}found{% else %}NOT found — all NVMe tasks will be skipped{% endif %}
 
-# -----------------------------------------------------------------------------
-# Step 3: NVMe preparation (only when booted from SD AND NVMe is present)
-# -----------------------------------------------------------------------------
-# All tasks below carry the same "when:" guard so they are silently skipped
-# if either precondition is not met.
+# Convenience fact used in every subsequent when: clause to keep them short.
+- name: Set nvme_ready fact
+  set_fact:
+    nvme_ready: "{{ booted_from_sd and nvme_stat.stat.exists }}"
+
+
+# =============================================================================
+# PHASE 2 — NVMe filesystem preparation
+# =============================================================================
 
 - name: Install btrfs-progs
-  # btrfs-progs provides the btrfs-convert tool (ext4 → btrfs conversion)
-  # and the mkfs.btrfs / btrfs utilities. "state: present" is idempotent —
-  # does nothing if already installed.
+  # Provides btrfs-convert, btrfs check, mkfs.btrfs.
+  # update_cache: false because linux.yml already ran apt-get update.
   apt:
     name: btrfs-progs
     state: present
-    update_cache: false   # linux.yml already ran apt update; skip repeat
-  when: booted_from_sd and nvme_stat.stat.exists
+    update_cache: false
+  when: nvme_ready
 
-# ---- Detect current partition and filesystem state -------------------------
-
-- name: Check whether NVMe partition exists
+- name: Check whether NVMe root partition exists
   stat:
-    path: "{{ nvme_partition }}"
-  register: nvme_part_stat
-  when: booted_from_sd and nvme_stat.stat.exists
+    path: "{{ nvme_root_partition }}"
+  register: nvme_root_stat
+  when: nvme_ready
+
+- name: Detect filesystem type on NVMe root partition
+  # blkid -o value -s TYPE prints just "ext4" or "btrfs" etc.
+  # failed_when: false because blkid exits non-zero on an unformatted device.
+  command: blkid -o value -s TYPE {{ nvme_root_partition }}
+  register: nvme_fs_type
+  changed_when: false
+  failed_when: false
+  when: nvme_ready and nvme_root_stat.stat.exists
+
+- name: Report current NVMe root partition filesystem
+  debug:
+    msg: "{{ nvme_root_partition }} filesystem: {{ nvme_fs_type.stdout | default('unknown') }}"
+  when: nvme_ready and nvme_root_stat.stat.exists
+
+# ---- Grow partition to fill device (ext4 only — skipped if already btrfs) --
 
 - name: Get NVMe device size in bytes
-  # blockdev --getsize64 returns the device capacity in bytes. We use this
-  # later to compare against the partition end to decide if resizing is needed.
   command: blockdev --getsize64 {{ nvme_device }}
   register: nvme_size_bytes
   changed_when: false
-  when: booted_from_sd and nvme_stat.stat.exists
+  when: nvme_ready and nvme_root_stat.stat.exists and nvme_fs_type.stdout | default('') == 'ext4'
 
-- name: Get current partition end (bytes)
-  # parted's machine-readable output (-m) for "unit B print" gives us a line
-  # like:  1:1048576B:62537072639B:62536024064B:ext4::;
-  # We extract field 3 (end position) and strip the trailing "B".
+- name: Get current root partition end in bytes
+  # parted machine-readable output for partition 2 looks like:
+  #   2:538968064B:62537072639B:61998104576B:ext4::;
+  # Field 3 is the end byte. We strip the trailing B.
   shell: |
     parted -m {{ nvme_device }} unit B print 2>/dev/null \
-      | awk -F: '$1 == "1" { gsub(/B/, "", $3); print $3 }'
+      | awk -F: '$1 == "2" { gsub(/B/, "", $3); print $3 }'
   register: nvme_part_end_bytes
   changed_when: false
-  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+  when: nvme_ready and nvme_root_stat.stat.exists and nvme_fs_type.stdout | default('') == 'ext4'
 
-- name: Detect current filesystem type on NVMe partition
-  # blkid -o value -s TYPE prints just the filesystem type string, e.g.
-  # "ext4" or "btrfs". We use this to skip conversion if already btrfs,
-  # and to skip resize2fs if the filesystem is already btrfs (resize2fs
-  # only works on ext4).
-  command: blkid -o value -s TYPE {{ nvme_partition }}
-  register: nvme_fs_type
-  changed_when: false
-  failed_when: false   # returns non-zero if no filesystem found — that's ok
-  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
-
-- name: Report current NVMe state
-  debug:
-    msg: >-
-      {{ nvme_partition }}:
-      filesystem={{ nvme_fs_type.stdout | default('unknown') }},
-      partition_end={{ nvme_part_end_bytes.stdout | default('?') }}B,
-      device_size={{ nvme_size_bytes.stdout | default('?') }}B
-  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
-
-# ---- Grow partition to fill the device -------------------------------------
-#
-# We only resize if the partition end is more than 1 MiB short of the device
-# end. The 1 MiB tolerance accounts for partition alignment rounding and
-# avoids a spurious "changed" on devices that are already fully used.
-# parted "resizepart 1 100%" expands the partition table entry in-place
-# without touching the data inside — safe on an unmounted partition.
-
-- name: Grow NVMe partition to fill device
-  command: parted -s {{ nvme_device }} resizepart 1 100%
+- name: Grow NVMe root partition to fill device
+  # Only runs when partition end is more than 1 MiB short of device end.
+  # The 1 MiB tolerance handles alignment rounding and prevents a spurious
+  # changed on a device that is already fully partitioned.
+  command: parted -s {{ nvme_device }} resizepart 2 100%
   when: >
-    booted_from_sd and
-    nvme_stat.stat.exists and
-    nvme_part_stat.stat.exists and
+    nvme_ready and
+    nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4' and
     (nvme_size_bytes.stdout | int) - (nvme_part_end_bytes.stdout | int) > 1048576
 
-# ---- Grow ext4 filesystem to fill the enlarged partition -------------------
-#
-# After resizepart the partition boundary has moved but the ext4 superblock
-# still describes the old, smaller size. resize2fs reads the partition's
-# new size from the block device and expands the filesystem metadata to
-# match. Passing no size argument means "fill the device". Running it a
-# second time is safe — it reports nothing to do and exits 0.
-# -f forces the check even if the filesystem was not cleanly unmounted.
-
 - name: Grow ext4 filesystem to fill enlarged partition
-  command: resize2fs -f {{ nvme_partition }}
+  # resize2fs with no size argument means "fill the block device".
+  # -f forces the operation even if e2fsck has not been run recently.
+  # Safe to run a second time — exits 0 with "nothing to do".
+  command: resize2fs -f {{ nvme_root_partition }}
   when: >
-    booted_from_sd and
-    nvme_stat.stat.exists and
-    nvme_part_stat.stat.exists and
+    nvme_ready and
+    nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
 
-# ---- Convert ext4 → btrfs --------------------------------------------------
-#
-# btrfs-convert performs an in-place conversion: it reads the ext4 metadata
-# and data, writes btrfs structures into the free space, and atomically
-# switches the superblock. The original ext4 data is preserved in a
-# read-only subvolume called "ext2_saved" so the conversion can be rolled
-# back with btrfs-convert --rollback if needed.
-#
-# This task is the most time-consuming — expect 1–10 minutes depending on
-# how much data is on the drive. Ansible's default task timeout is generous
-# enough for this. The filesystem must be unmounted (guaranteed by our SD
-# boot precondition).
-#
-# The "when:" skips this task if the filesystem is already btrfs, making
-# the whole role idempotent.
+# ---- Convert ext4 -> btrfs -------------------------------------------------
 
 - name: Convert ext4 filesystem to btrfs
-  command: btrfs-convert {{ nvme_partition }}
+  # btrfs-convert is an in-place conversion. It writes btrfs metadata into
+  # the free space of the ext4 filesystem and atomically switches the
+  # superblock. The original ext4 data is preserved in a read-only subvolume
+  # named "ext2_saved" which can be used with btrfs-convert --rollback if
+  # you need to undo the conversion.
+  #
+  # This is the most time-consuming step — allow 5-15 minutes on a large
+  # drive. The filesystem MUST be unmounted, which is guaranteed by the SD
+  # boot precondition checked in Phase 1.
+  #
+  # The when: condition makes this idempotent: skipped entirely if the
+  # partition is already btrfs (e.g. from a previous run of this playbook).
+  command: btrfs-convert {{ nvme_root_partition }}
   when: >
-    booted_from_sd and
-    nvme_stat.stat.exists and
-    nvme_part_stat.stat.exists and
+    nvme_ready and
+    nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
-  # btrfs-convert can take several minutes on a large drive.
-  # Ansible's default async is synchronous (blocking) which is fine here.
+  async: 1800   # allow up to 30 minutes for very large drives
+  poll: 15      # check every 15 seconds so we see progress in the log
 
 - name: Verify btrfs filesystem after conversion
-  # Run a quick btrfs check in read-only mode to confirm the filesystem is
-  # structurally sound after conversion. --check is read-only and safe.
-  command: btrfs check --readonly {{ nvme_partition }}
+  # --readonly performs a structural check without modifying anything.
+  # Catches conversion errors before we try to boot from the drive.
+  command: btrfs check --readonly {{ nvme_root_partition }}
   changed_when: false
-  when: >
-    booted_from_sd and
-    nvme_stat.stat.exists and
-    nvme_part_stat.stat.exists and
-    nvme_fs_type.stdout | default('') in ['ext4', 'btrfs']
+  when: nvme_ready and nvme_root_stat.stat.exists
 
-- name: Report final filesystem type
-  command: blkid -o value -s TYPE {{ nvme_partition }}
-  register: nvme_fs_type_final
+
+# =============================================================================
+# PHASE 3 — Mount NVMe under /mnt
+# =============================================================================
+#
+# We mount the NVMe partitions into a tree rooted at nvme_chroot (/mnt by
+# default), then bind-mount the kernel pseudo-filesystems into it so that
+# tools running inside the chroot (apt, update-initramfs, systemctl) work
+# correctly.
+
+- name: Ensure chroot mount point exists
+  file:
+    path: "{{ nvme_chroot }}"
+    state: directory
+    mode: "0755"
+  when: nvme_ready
+
+- name: Mount NVMe root partition (btrfs) on {{ nvme_chroot }}
+  mount:
+    path: "{{ nvme_chroot }}"
+    src: "{{ nvme_root_partition }}"
+    fstype: btrfs
+    state: mounted
+  when: nvme_ready
+
+- name: Ensure {{ nvme_chroot }}/boot/firmware mount point exists
+  file:
+    path: "{{ nvme_chroot }}/boot/firmware"
+    state: directory
+    mode: "0755"
+  when: nvme_ready
+
+- name: Mount NVMe boot partition (FAT32) on {{ nvme_chroot }}/boot/firmware
+  mount:
+    path: "{{ nvme_chroot }}/boot/firmware"
+    src: "{{ nvme_boot_partition }}"
+    fstype: vfat
+    state: mounted
+  when: nvme_ready
+
+- name: Bind-mount /proc into chroot
+  # Needed by update-initramfs, systemctl, and many package scripts.
+  mount:
+    path: "{{ nvme_chroot }}/proc"
+    src: /proc
+    fstype: none
+    opts: bind
+    state: mounted
+  when: nvme_ready
+
+- name: Bind-mount /sys into chroot
+  # Needed by udev rules during initramfs generation.
+  mount:
+    path: "{{ nvme_chroot }}/sys"
+    src: /sys
+    fstype: none
+    opts: bind
+    state: mounted
+  when: nvme_ready
+
+- name: Bind-mount /dev into chroot
+  # Needed so device nodes are visible inside the chroot.
+  mount:
+    path: "{{ nvme_chroot }}/dev"
+    src: /dev
+    fstype: none
+    opts: bind
+    state: mounted
+  when: nvme_ready
+
+- name: Bind-mount /dev/pts into chroot
+  # Needed by apt and any tool that opens a pseudo-terminal.
+  mount:
+    path: "{{ nvme_chroot }}/dev/pts"
+    src: /dev/pts
+    fstype: none
+    opts: bind
+    state: mounted
+  when: nvme_ready
+
+
+# =============================================================================
+# PHASE 4 — Update boot configuration inside the chroot
+# =============================================================================
+
+- name: Get btrfs UUID of NVMe root partition
+  # blkid -o value -s UUID prints just the UUID string, e.g.:
+  #   a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  # We store this in a fact because we need it in both cmdline.txt and fstab.
+  command: blkid -o value -s UUID {{ nvme_root_partition }}
+  register: nvme_root_uuid
   changed_when: false
-  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+  when: nvme_ready
 
-- name: Show final NVMe status
+- name: Report NVMe root UUID
   debug:
-    msg: "{{ nvme_partition }} is now {{ nvme_fs_type_final.stdout }} — NVMe preparation complete."
-  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+    msg: "NVMe root partition UUID: {{ nvme_root_uuid.stdout }}"
+  when: nvme_ready
+
+- name: Update root= parameter in cmdline.txt
+  # cmdline.txt is a single line of kernel parameters. The root= parameter
+  # tells the kernel which device to mount as the root filesystem.
+  # We replace whatever root=PARTUUID=... or root=UUID=... or root=/dev/...
+  # is currently there with root=UUID=<nvme_root_uuid>.
+  replace:
+    path: "{{ nvme_chroot }}/boot/firmware/cmdline.txt"
+    regexp: 'root=\S+'
+    replace: "root=UUID={{ nvme_root_uuid.stdout }}"
+  when: nvme_ready
+
+- name: Update rootfstype= in cmdline.txt
+  # Change rootfstype=ext4 to rootfstype=btrfs.
+  # If the parameter is absent this task does nothing (idempotent).
+  replace:
+    path: "{{ nvme_chroot }}/boot/firmware/cmdline.txt"
+    regexp: 'rootfstype=\S+'
+    replace: "rootfstype=btrfs"
+  when: nvme_ready
+
+- name: Update root entry in fstab
+  # The fstab root entry mounts the root partition at /. We replace the
+  # device field and fstype field on the line that mounts /.
+  # The regexp matches lines of the form:
+  #   PARTUUID=xxxx  /  ext4   defaults  0  1
+  #   UUID=xxxx      /  btrfs  defaults  0  1
+  #   /dev/xxx       /  ext4   defaults  0  1
+  # Capture groups:
+  #   \1 = whitespace + / + whitespace  (preserved)
+  #   \2 = remaining fields             (preserved)
+  replace:
+    path: "{{ nvme_chroot }}/etc/fstab"
+    regexp: '^\S+(\s+/\s+)\S+(\s+.*)$'
+    replace: "UUID={{ nvme_root_uuid.stdout }}\\1btrfs\\2"
+  when: nvme_ready
+
+- name: Copy resolv.conf into chroot so apt can resolve hostnames
+  # Without a working resolv.conf, apt cannot reach the Debian/Raspberry Pi
+  # OS package mirrors. We copy the SD card's resolv.conf which is already
+  # working (we are online via the SD boot).
+  copy:
+    src: /etc/resolv.conf
+    dest: "{{ nvme_chroot }}/etc/resolv.conf"
+    remote_src: true   # both src and dest are on the remote Pi, not the controller
+  when: nvme_ready
+
+- name: Regenerate initramfs inside chroot
+  # update-initramfs rebuilds the initial RAM filesystem that the bootloader
+  # loads before the kernel mounts the root partition. It must be regenerated
+  # because the root device has changed (new UUID, filesystem type now btrfs).
+  # -u = update existing initramfs for all installed kernels
+  # -k all = rebuild for every kernel version present
+  # Run via chroot so it uses the NVMe root's kernel version and hooks.
+  command: chroot {{ nvme_chroot }} update-initramfs -u -k all
+  when: nvme_ready
+
+
+# =============================================================================
+# PHASE 5 — Install ipv6_dns_sync inside the chroot
+# =============================================================================
+#
+# This mirrors exactly what linux.yml does on a normal Linux host, but every
+# file operation targets {{ nvme_chroot }}/... and every command runs via
+# chroot. The result is that the NVMe root will have ipv6_dns_sync fully
+# installed and enabled before its first native boot.
+
+- name: Install bind9-dnsutils inside chroot
+  # nsupdate (from bind9-dnsutils) is required by ipv6_dns_sync.py.
+  # We run apt-get inside the chroot so the package is installed into the
+  # NVMe root's dpkg database, not the SD card's.
+  command: chroot {{ nvme_chroot }} apt-get install -y bind9-dnsutils
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: nvme_ready
+
+- name: Create ipv6_dns_sync cache directory inside chroot
+  file:
+    path: "{{ nvme_chroot }}{{ ipv6_cache_dir_linux }}"
+    state: directory
+    owner: root
+    mode: "0700"
+  when: nvme_ready
+
+- name: Deploy TSIG key file into chroot
+  template:
+    src: mykey.j2
+    dest: "{{ nvme_chroot }}{{ ipv6_keyfile_linux }}"
+    owner: root
+    mode: "0600"
+  when: nvme_ready
+
+- name: Copy ipv6_dns_sync.py into chroot
+  copy:
+    src: "{{ playbook_dir }}/../usr/local/bin/ipv6_dns_sync.py"
+    dest: "{{ nvme_chroot }}/usr/local/bin/ipv6_dns_sync.py"
+    owner: root
+    mode: "0755"
+  when: nvme_ready
+
+- name: Copy ipv6_dns_watch_linux.sh into chroot
+  copy:
+    src: "{{ playbook_dir }}/../usr/local/bin/ipv6_dns_watch_linux.sh"
+    dest: "{{ nvme_chroot }}/usr/local/bin/ipv6_dns_watch_linux.sh"
+    owner: root
+    mode: "0755"
+  when: nvme_ready
+
+- name: Copy ipv6-dns-watch.service into chroot
+  copy:
+    src: "{{ playbook_dir }}/../etc/systemd/system/ipv6-dns-watch.service"
+    dest: "{{ nvme_chroot }}/etc/systemd/system/ipv6-dns-watch.service"
+    owner: root
+    mode: "0644"
+  when: nvme_ready
+
+- name: Deploy ipv6-dns-cleanup.service into chroot
+  # Uses the Jinja2 template so the config URL variable is substituted in,
+  # exactly as linux.yml does for a live host.
+  template:
+    src: ipv6-dns-cleanup.service.j2
+    dest: "{{ nvme_chroot }}/etc/systemd/system/ipv6-dns-cleanup.service"
+    owner: root
+    mode: "0644"
+  when: nvme_ready
+
+- name: Enable ipv6-dns-watch service inside chroot
+  # systemctl enable creates the symlink in the systemd wants/ directory so
+  # the service starts automatically on the first native NVMe boot.
+  # We cannot use the Ansible systemd module here because there is no running
+  # systemd inside the chroot — we call systemctl directly via chroot.
+  command: chroot {{ nvme_chroot }} systemctl enable ipv6-dns-watch.service
+  when: nvme_ready
+
+- name: Enable ipv6-dns-cleanup service inside chroot
+  command: chroot {{ nvme_chroot }} systemctl enable ipv6-dns-cleanup.service
+  when: nvme_ready
+
+
+# =============================================================================
+# PHASE 6 — Unmount and finish
+# =============================================================================
+#
+# Unmount in strict reverse order: deepest mounts first, root last.
+# state: unmounted calls umount and removes any entry the mount module
+# added to the host's /etc/fstab during Phase 3.
+
+- name: Unmount /dev/pts from chroot
+  mount:
+    path: "{{ nvme_chroot }}/dev/pts"
+    state: unmounted
+  when: nvme_ready
+
+- name: Unmount /dev from chroot
+  mount:
+    path: "{{ nvme_chroot }}/dev"
+    state: unmounted
+  when: nvme_ready
+
+- name: Unmount /sys from chroot
+  mount:
+    path: "{{ nvme_chroot }}/sys"
+    state: unmounted
+  when: nvme_ready
+
+- name: Unmount /proc from chroot
+  mount:
+    path: "{{ nvme_chroot }}/proc"
+    state: unmounted
+  when: nvme_ready
+
+- name: Unmount NVMe boot partition
+  mount:
+    path: "{{ nvme_chroot }}/boot/firmware"
+    state: unmounted
+  when: nvme_ready
+
+- name: Unmount NVMe root partition
+  mount:
+    path: "{{ nvme_chroot }}"
+    state: unmounted
+  when: nvme_ready
+
+- name: NVMe preparation complete
+  debug:
+    msg: >-
+      NVMe boot preparation is complete. The machine is ready to shut down.
+      Remove the SD card before powering back on and the Pi will boot from the NVMe drive.
+  when: nvme_ready

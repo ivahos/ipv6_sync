@@ -4,12 +4,19 @@
 # =============================================================================
 #
 # Override any of these in inventory/host_vars/<hostname>.yml for a specific
-# Pi, or in inventory/group_vars/raspberry_pi.yml for all Pis.
+# Pi, or in inventory/group_vars/raspberry_pi.yml to apply to all Pis.
 
-# The NVMe block device to prepare.
-# Change this if your Pi has a different NVMe device node.
+# The NVMe block device (the whole disk, not a partition).
 nvme_device: /dev/nvme0n1
 
-# The partition within nvme_device that holds the filesystem to convert.
-# Most Pi NVMe setups have a single partition at p1.
-nvme_partition: /dev/nvme0n1p1
+# The FAT32 boot partition — stays as-is, mounted at /boot/firmware.
+# Contains cmdline.txt, config.txt, initramfs images, and the bootloader.
+nvme_boot_partition: /dev/nvme0n1p1
+
+# The root partition — ext4, will be converted to btrfs.
+# This is the partition that gets resized and converted.
+nvme_root_partition: /dev/nvme0n1p2
+
+# Mount point used as the chroot root during preparation.
+# The NVMe root is mounted here and all chroot operations target it.
+nvme_chroot: /mnt
