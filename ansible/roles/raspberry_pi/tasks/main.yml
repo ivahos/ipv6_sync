@@ -218,20 +218,24 @@
 # ---- Check ext4 filesystem before conversion --------------------------------
 
 - name: Run e2fsck to ensure ext4 is clean before conversion
-  # btrfs-convert will refuse to run if the ext4 filesystem has the dirty
-  # flag set, which is always the case for a cloned filesystem -- the source
-  # was mounted on the SD card and the clone inherits its journal state.
-  # e2fsck -fy fixes any inconsistencies and clears the dirty flag.
-  # -f = force check even if the filesystem appears clean
-  # -y = answer yes to all repair prompts (non-interactive)
-  # e2fsck exits 0 (no errors) or 1 (errors fixed). Both are success for us.
-  # It exits 2+ only on serious uncorrectable errors, which we do want to fail on.
+  # Disabled by default (nvme_run_e2fsck: false) because a cleanly cloned
+  # filesystem does not need it -- the clone tool unmounts the source before
+  # copying so the journal is clean. Set nvme_run_e2fsck: true in host_vars
+  # if you have reason to believe the filesystem may be dirty (e.g. the clone
+  # was made from a live mounted source, or a previous run was interrupted).
+  #
+  # When enabled:
+  #   -f = force check even if the filesystem appears clean
+  #   -y = answer yes to all repair prompts (non-interactive)
+  #   rc=0: clean, rc=1: errors found and fixed (both are success)
+  #   rc>=2: unrecoverable errors (aborts the playbook)
   command: e2fsck -fy {{ nvme_root_partition }}
   register: e2fsck_result
   failed_when: e2fsck_result.rc > 1
-  changed_when: e2fsck_result.rc == 1   # rc=1 means errors were found and fixed
+  changed_when: e2fsck_result.rc == 1
   when: >
     nvme_ready and
+    nvme_run_e2fsck and
     nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
 
@@ -260,15 +264,17 @@
     nvme_ready and
     nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
-  async: 1800   # allow up to 30 minutes for very large drives
+  async: "{{ nvme_convert_timeout }}"
   poll: 15      # check every 15 seconds so we see progress in the log
 
 - name: Verify btrfs filesystem after conversion
-  # --readonly performs a structural check without modifying anything.
-  # Catches conversion errors before we try to boot from the drive.
+  # Disabled by default (nvme_run_btrfs_check: false) because on a 4TB drive
+  # btrfs check --readonly can take 20-30+ minutes walking the entire tree,
+  # making the playbook appear hung. Enable in host_vars if you want the
+  # extra confidence of a full structural check after conversion.
   command: btrfs check --readonly {{ nvme_root_partition }}
   changed_when: false
-  when: nvme_ready and nvme_root_stat.stat.exists
+  when: nvme_ready and nvme_run_btrfs_check and nvme_root_stat.stat.exists
 
 
 # =============================================================================
