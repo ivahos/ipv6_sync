@@ -118,7 +118,9 @@
 - name: Run normal Linux install if not booted from SD card
   # The Pi is already running from its NVMe drive. Treat it as a normal Linux
   # host and install ipv6_dns_sync directly onto the live running system.
-  include_tasks: linux.yml
+  # Use role_path to get the absolute path to the tasks directory so this
+  # works correctly regardless of where Ansible is invoked from.
+  include_tasks: "{{ role_path }}/../ipv6_dns_sync/tasks/linux.yml"
   when: not booted_from_sd
 
 - name: Check whether NVMe device exists
