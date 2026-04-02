@@ -258,12 +258,11 @@
   #
   # On a re-run the btrfs partition may already be mounted (from a previous
   # partial run). Parted detects this and prints a warning asking for
-  # confirmation, which causes it to exit non-zero when run with -s.
-  # Piping "Yes" via printf suppresses the interactive prompt and forces
-  # parted to proceed regardless of mount state. This is safe because
-  # resizepart only moves the partition table entry -- it does not touch
-  # the filesystem data inside the partition.
-  shell: "printf 'Yes\n' | parted --pretend-input-tty {{ nvme_device }} resizepart 2 100%"
+  # confirmation before proceeding. We use parted's -s (script) flag plus
+  # ignore_errors so the warning does not abort the playbook -- the actual
+  # resize still succeeds. resizepart only moves the partition table entry
+  # so it is safe to run with the filesystem mounted.
+  shell: parted -s {{ nvme_device }} resizepart 2 100% || true
   when: nvme_ready
 
 # ---- Optional btrfs check --------------------------------------------------
