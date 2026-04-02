@@ -37,3 +37,20 @@ nvme_run_btrfs_check: false
 # Tested at ~10 minutes on a 4TB NVMe at 5% usage on a Pi 500.
 # Raise this if your drive is larger or more heavily populated.
 nvme_convert_timeout: 3600
+
+# =============================================================================
+# ipv6_dns_sync variables (mirrored from ipv6_dns_sync role defaults)
+# =============================================================================
+# The raspberry_pi role installs ipv6_dns_sync into the NVMe chroot during
+# Phase 5. It needs these variables from the ipv6_dns_sync role, but Ansible
+# does not automatically make one role's defaults available to another role.
+# These values must match the ipv6_dns_sync role defaults (or host_vars
+# overrides) exactly -- if you override them for ipv6_dns_sync, override
+# them here too.
+
+ipv6_sync_config_url: "https://a02.au/ipv6_sync_config/config.json"
+ipv6_tsig_key: "****TSIG_KEY****"
+ipv6_tsig_key_name: "ivarkey"
+ipv6_tsig_key_algorithm: "hmac-sha256"
+ipv6_keyfile_linux: "/root/.mykey"
+ipv6_cache_dir_linux: "/root/.cache/ipv6_dns_sync"
