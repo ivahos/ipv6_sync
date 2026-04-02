@@ -131,6 +131,15 @@
   include_tasks: "{{ role_path }}/../ipv6_dns_sync/tasks/linux.yml"
   when: booted_from_nvme
 
+- name: Set nvme_ready false when booted from NVMe
+  # When booted from NVMe the migration phases are not needed.
+  # Setting nvme_ready to false here ensures all Phase 2-6 tasks skip
+  # cleanly via their 'when: nvme_ready' conditions rather than failing
+  # with 'nvme_ready is undefined'.
+  set_fact:
+    nvme_ready: false
+  when: booted_from_nvme
+
 - name: Check whether NVMe device exists
   stat:
     path: "{{ nvme_device }}"
