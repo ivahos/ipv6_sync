@@ -442,7 +442,10 @@
         path: "{{ nvme_chroot }}"
         src: "{{ nvme_root_partition }}"
         fstype: btrfs
-        state: mounted
+        state: ephemeral
+        # ephemeral: mount without writing to /etc/fstab on the boot device.
+        # state: mounted would add entries to the SD card's fstab which causes
+        # boot failures if the playbook is interrupted before the unmount phase.
 
     - name: Grow btrfs filesystem to fill enlarged partition
       # After parted extended the partition boundary the btrfs filesystem still
@@ -463,7 +466,7 @@
         path: "{{ nvme_chroot }}/boot/firmware"
         src: "{{ nvme_boot_partition }}"
         fstype: vfat
-        state: mounted
+        state: ephemeral
 
     - name: Bind-mount /proc into chroot
       mount:
@@ -471,7 +474,7 @@
         src: /proc
         fstype: none
         opts: bind
-        state: mounted
+        state: ephemeral
 
     - name: Bind-mount /sys into chroot
       mount:
@@ -479,7 +482,7 @@
         src: /sys
         fstype: none
         opts: bind
-        state: mounted
+        state: ephemeral
 
     - name: Bind-mount /dev into chroot
       mount:
@@ -487,7 +490,7 @@
         src: /dev
         fstype: none
         opts: bind
-        state: mounted
+        state: ephemeral
 
     - name: Bind-mount /dev/pts into chroot
       mount:
@@ -495,7 +498,7 @@
         src: /dev/pts
         fstype: none
         opts: bind
-        state: mounted
+        state: ephemeral
 
     # =========================================================================
     # PHASE 4 -- Update boot configuration inside the chroot
