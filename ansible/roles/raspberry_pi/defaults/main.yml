@@ -6,15 +6,32 @@
 # Override any of these in inventory/host_vars/<hostname>.yml for a specific
 # Pi, or in inventory/group_vars/raspberry_pi.yml to apply to all Pis.
 
-# The NVMe block device (the whole disk, not a partition).
+# Target device auto-detection
+# =============================================================================
+# By default the role auto-detects the target device by scanning for a block
+# device (other than the current boot device) with the standard pi-manager
+# partition layout:
+#   - a FAT32 partition labelled 'bootfs'
+#   - an ext4 partition labelled 'rootfs'
+#
+# The default values below (/dev/nvme0n1 etc.) act as a sentinel -- when the
+# role sees these defaults it runs auto-detection. Set all three explicitly in
+# host_vars to override auto-detection and target a specific device.
+#
+# Example override in host_vars/<hostname>.yml:
+#   nvme_device: /dev/sda
+#   nvme_boot_partition: /dev/sda1
+#   nvme_root_partition: /dev/sda2
+
+# The target block device (whole disk, not a partition).
 nvme_device: /dev/nvme0n1
 
-# The FAT32 boot partition — stays as-is, mounted at /boot/firmware.
+# The FAT32 boot partition -- stays as-is, mounted at /boot/firmware.
 # Contains cmdline.txt, config.txt, initramfs images, and the bootloader.
 nvme_boot_partition: /dev/nvme0n1p1
 
-# The root partition — ext4, will be converted to btrfs then grown to fill
-# the disk after MBR->GPT conversion.
+# The root partition -- ext4, will be converted to btrfs then grown to fill
+# the disk after MBR->GPT conversion if needed.
 nvme_root_partition: /dev/nvme0n1p2
 
 # Mount point used as the chroot root during preparation.

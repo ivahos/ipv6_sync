@@ -1,20 +1,26 @@
 ---
 # =============================================================================
-# roles/raspberry_pi/tasks/main.yml — Raspberry Pi NVMe boot preparation
+# roles/raspberry_pi/tasks/main.yml — Raspberry Pi boot device preparation
 # =============================================================================
+#
+# This role prepares any Raspberry Pi to boot from a secondary storage device
+# (NVMe SSD, SATA SSD via USB adapter, or any other device running a standard
+# Raspberry Pi OS image written by pi-manager).
 #
 # This role handles two distinct situations depending on how the Pi is booted:
 #
-#   Booted from SD card (root on mmcblkX):
-#     Full NVMe preparation sequence runs -- converts the NVMe root partition
-#     from ext4 to btrfs, converts the partition table from MBR to GPT (which
-#     is required to address >2TB on a 4TB drive), grows the partition to fill
-#     the disk, and leaves the machine ready to shut down and boot from NVMe.
+#   Booted from an external device (SD card, USB stick, or any device whose
+#   root is NOT the target drive):
+#     The target drive is auto-detected by looking for the standard pi-manager
+#     two-partition layout (FAT32 labelled 'bootfs' + ext4 labelled 'rootfs').
+#     The full preparation sequence runs -- converts ext4 to btrfs, converts
+#     MBR to GPT if needed (required for drives >2TB), grows the partition to
+#     fill the device, installs ipv6_dns_sync and the r8152 driver into the
+#     chroot, and leaves the machine ready to shut down and remove boot media.
 #
-#   Booted from NVMe (root NOT on mmcblkX):
-#     The Pi is already running from its NVMe drive. The role skips all NVMe
-#     preparation and falls through to linux.yml, performing a normal
-#     ipv6_dns_sync installation on the live running system.
+#   Booted from the target drive (root IS on the target drive):
+#     The role skips all preparation and falls through to linux.yml, performing
+#     a normal ipv6_dns_sync installation on the live running system.
 #
 # It is safe to run repeatedly -- every destructive step is guarded by a
 # condition that checks whether the work is already done.
@@ -78,12 +84,19 @@
 #     6c. Unmount /mnt
 #     6d. Print ready-to-shutdown message
 #
-# OVERRIDE VARIABLES (set in inventory/host_vars/<hostname>.yml):
-#   nvme_device:          block device          (default: /dev/nvme0n1)
-#   nvme_boot_partition:  FAT32 boot partition  (default: /dev/nvme0n1p1)
-#   nvme_root_partition:  ext4/btrfs root part  (default: /dev/nvme0n1p2)
+# TARGET DEVICE (auto-detected by default):
+#   The role searches for a block device (other than the boot device) with the
+#   standard pi-manager partition layout: FAT32 labelled 'bootfs' + ext4/btrfs
+#   labelled 'rootfs'. The first matching device is used as the target.
+#
+#   To override auto-detection, set all three explicitly in host_vars:
+#     nvme_device:          full device path      (e.g. /dev/sda, /dev/nvme0n1)
+#     nvme_boot_partition:  FAT32 boot partition  (e.g. /dev/sda1)
+#     nvme_root_partition:  ext4/btrfs root part  (e.g. /dev/sda2)
+#
+# OTHER OVERRIDE VARIABLES (set in inventory/host_vars/<hostname>.yml):
 #   nvme_chroot:          chroot mount point    (default: /mnt)
-#   nvme_run_e2fsck:      run e2fsck before convert (default: false)
+#   nvme_run_e2fsck:      run e2fsck before convert (default: true)
 #   nvme_run_btrfs_check: run btrfs check after convert (default: false)
 #   nvme_convert_timeout: seconds to wait for btrfs-convert (default: 3600)
 
@@ -140,23 +153,117 @@
     nvme_ready: false
   when: booted_from_nvme
 
-- name: Check whether NVMe device exists
+# -----------------------------------------------------------------------------
+# Auto-detect target device
+# -----------------------------------------------------------------------------
+# If nvme_device is set to its default value (/dev/nvme0n1) we attempt to
+# auto-detect the target device by looking for a block device (other than the
+# current boot device) that has the standard Raspberry Pi OS two-partition
+# layout: a FAT32 partition labelled 'bootfs' and an ext4/btrfs partition
+# labelled 'rootfs'. This is the layout written by pi-manager on every image,
+# regardless of whether the device is an NVMe, SATA SSD, or USB drive.
+#
+# If an explicit nvme_device is set in host_vars it is used as-is and
+# auto-detection is skipped, preserving backwards compatibility.
+#
+# The auto-detection uses lsblk -J (JSON output) parsed by a small Python
+# one-liner so we get structured data without fragile text parsing.
+
+- name: Auto-detect target block device
+  # Parse lsblk JSON to find a device (not the boot device) that has:
+  #   - a child partition with LABEL=bootfs and FSTYPE=vfat
+  #   - a child partition with LABEL=rootfs and FSTYPE=ext4 or btrfs
+  # Sets three facts:
+  #   target_device         e.g. /dev/sda  or /dev/nvme0n1
+  #   target_boot_partition e.g. /dev/sda1 or /dev/nvme0n1p1
+  #   target_root_partition e.g. /dev/sda2 or /dev/nvme0n1p2
+  # If no matching device is found all three are set to empty string.
+  script:
+    cmd: |
+      python3 -c "
+      import json, subprocess, sys
+      boot_dev = '{{ root_device_raw.stdout }}'
+      # Strip partition suffix to get the parent device name
+      # e.g. /dev/sda2 -> sda, /dev/nvme0n1p2 -> nvme0n1
+      import re
+      boot_parent = re.sub(r'p?\d+$', '', boot_dev.replace('/dev/', ''))
+      data = json.loads(subprocess.check_output(['lsblk', '-J', '-o', 'NAME,FSTYPE,LABEL,TYPE']))
+      for dev in data['blockdevices']:
+          if dev['name'] == boot_parent:
+              continue
+          if dev.get('type') != 'disk':
+              continue
+          children = dev.get('children', [])
+          boot_part = next((c for c in children
+              if c.get('label') == 'bootfs' and c.get('fstype') == 'vfat'), None)
+          root_part = next((c for c in children
+              if c.get('label') == 'rootfs' and c.get('fstype') in ('ext4', 'btrfs')), None)
+          if boot_part and root_part:
+              print('/dev/' + dev['name'])
+              print('/dev/' + boot_part['name'])
+              print('/dev/' + root_part['name'])
+              sys.exit(0)
+      print('')
+      print('')
+      print('')
+      "
+  register: target_device_raw
+  changed_when: false
+  when: not booted_from_nvme and nvme_device == '/dev/nvme0n1'
+
+- name: Set target device facts from auto-detection
+  # Split the three lines of output into individual facts.
+  set_fact:
+    target_device: "{{ target_device_raw.stdout_lines[0] | default('') }}"
+    target_boot_partition: "{{ target_device_raw.stdout_lines[1] | default('') }}"
+    target_root_partition: "{{ target_device_raw.stdout_lines[2] | default('') }}"
+  when: not booted_from_nvme and nvme_device == '/dev/nvme0n1'
+
+- name: Use explicit device from host_vars (auto-detection skipped)
+  # When nvme_device is explicitly set in host_vars, use it directly.
+  set_fact:
+    target_device: "{{ nvme_device }}"
+    target_boot_partition: "{{ nvme_boot_partition }}"
+    target_root_partition: "{{ nvme_root_partition }}"
+  when: not booted_from_nvme and nvme_device != '/dev/nvme0n1'
+
+- name: Override defaults with auto-detected device
+  # If auto-detection found a device, update the nvme_* variables so all
+  # subsequent tasks work correctly without any further changes.
+  set_fact:
+    nvme_device: "{{ target_device }}"
+    nvme_boot_partition: "{{ target_boot_partition }}"
+    nvme_root_partition: "{{ target_root_partition }}"
+  when: not booted_from_nvme and target_device is defined and target_device != ''
+
+- name: Report target device detection result
+  debug:
+    msg: >-
+      Target device: {{ nvme_device }}
+      Boot partition: {{ nvme_boot_partition }}
+      Root partition: {{ nvme_root_partition }}
+  when: not booted_from_nvme
+
+- name: Check whether target device exists
   stat:
     path: "{{ nvme_device }}"
   register: nvme_stat
-  when: not booted_from_nvme
+  when: not booted_from_nvme and nvme_device != ''
 
-- name: Report NVMe detection result
-  debug:
+- name: Abort if no suitable target device found
+  fail:
     msg: >-
-      {{ nvme_device }}:
-      {% if nvme_stat.stat.exists %}found{% else %}NOT found -- all NVMe tasks will be skipped{% endif %}
-  when: not booted_from_nvme
+      No suitable target device found. Expected a block device with a FAT32
+      partition labelled 'bootfs' and an ext4 partition labelled 'rootfs'
+      (the standard Raspberry Pi OS layout written by pi-manager).
+      If your device has a non-standard layout, set nvme_device,
+      nvme_boot_partition and nvme_root_partition explicitly in host_vars.
+  when: not booted_from_nvme and (nvme_device == '' or not nvme_stat.stat.exists)
 
 # Convenience fact used in every subsequent when: clause to keep them short.
 - name: Set nvme_ready fact
   set_fact:
-    nvme_ready: "{{ not booted_from_nvme and nvme_stat.stat.exists }}"
+    nvme_ready: "{{ not booted_from_nvme and nvme_device != '' and nvme_stat.stat.exists }}"
   when: not booted_from_nvme
 
 
