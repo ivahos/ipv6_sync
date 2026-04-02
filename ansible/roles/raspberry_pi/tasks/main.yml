@@ -149,12 +149,14 @@
   # btrfs-progs: provides btrfs-convert and btrfs filesystem resize.
   # gdisk: needed to convert the MBR partition table to GPT, which is
   # required before parted can grow a partition beyond the 2TB MBR limit.
+  # update_cache: true because on the SD boot path linux.yml never runs,
+  # so apt-get update has not been called yet and the cache may be stale.
   apt:
     name:
       - btrfs-progs
       - gdisk
     state: present
-    update_cache: false
+    update_cache: true
   when: nvme_ready
 
 - name: Check whether NVMe root partition exists
