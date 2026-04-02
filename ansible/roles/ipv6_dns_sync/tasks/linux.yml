@@ -273,16 +273,42 @@
     state: present
   notify: Reload sshd
 
-- name: Set VerifyHostKeyDNS yes in ssh_config
-  # VerifyHostKeyDNS yes tells the SSH client to look up SSHFP records in DNS
-  # and use them to verify host keys. If SSHFP records are found and match,
-  # the host is trusted without a known_hosts prompt. If no SSHFP records are
-  # found, SSH falls back to the normal known_hosts behaviour -- no breakage.
-  # This is the non-strict setting (yes rather than ask) so known_hosts still
-  # works as a fallback for hosts without SSHFP records.
-  # Goes in ssh_config (client config) not sshd_config (server config).
-  lineinfile:
-    path: /etc/ssh/ssh_config
-    regexp: '^#?\s*VerifyHostKeyDNS'
-    line: '    VerifyHostKeyDNS yes'
-    state: present
+# -----------------------------------------------------------------------------
+# Deploy ssh_config.d drop-in files
+# -----------------------------------------------------------------------------
+# Rather than modifying the system ssh_config directly, we place drop-in
+# files in /etc/ssh/ssh_config.d/ which are included automatically by
+# OpenSSH 8.2+. This keeps the system config untouched and makes our
+# changes clearly visible as a separate, named set of overrides.
+#
+# 10-dns-verify.conf  -- enables VerifyHostKeyDNS yes for all hosts
+# 90-owned-domains.conf -- template for strict SSHFP on your own domains
+#                          (ships commented-out, edit and re-deploy to enable)
+
+- name: Ensure /etc/ssh/ssh_config.d exists
+  file:
+    path: /etc/ssh/ssh_config.d
+    state: directory
+    owner: root
+    mode: "0755"
+
+- name: Deploy 10-dns-verify.conf
+  copy:
+    src: ssh_config.d/10-dns-verify.conf
+    dest: /etc/ssh/ssh_config.d/10-dns-verify.conf
+    owner: root
+    mode: "0644"
+
+- name: Deploy 90-owned-domains.conf
+  # Ships with the Host block commented out. Edit the file on the host
+  # (or add your domains to host_vars and re-run) to enable strict SSHFP
+  # verification for your own domains.
+  copy:
+    src: ssh_config.d/90-owned-domains.conf
+    dest: /etc/ssh/ssh_config.d/90-owned-domains.conf
+    owner: root
+    mode: "0644"
+    force: false
+    # force: false means we never overwrite an existing file -- if you have
+    # customised this file with your own domains, re-running the playbook
+    # will not clobber your changes.

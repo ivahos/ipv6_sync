@@ -315,14 +315,38 @@
     state: present
   notify: Reload sshd (macOS)
 
-- name: Set VerifyHostKeyDNS yes in ssh_config
-  # Same rationale as linux.yml -- use SSHFP records to verify host keys
-  # without breaking known_hosts fallback for hosts without SSHFP records.
-  lineinfile:
-    path: /etc/ssh/ssh_config
-    regexp: '^#?\s*VerifyHostKeyDNS'
-    line: '    VerifyHostKeyDNS yes'
-    state: present
+# -----------------------------------------------------------------------------
+# Deploy ssh_config.d drop-in files (system)
+# -----------------------------------------------------------------------------
+# Rather than modifying /etc/ssh/ssh_config directly, we place drop-in files
+# in /etc/ssh/ssh_config.d/ which OpenSSH includes automatically.
+# Note: the macOS system OpenSSH has a bug where SSHFP records are always
+# treated as untrusted -- the Homebrew OpenSSH tasks below handle the correct
+# config for the working implementation.
+
+- name: Ensure /etc/ssh/ssh_config.d exists
+  file:
+    path: /etc/ssh/ssh_config.d
+    state: directory
+    owner: root
+    mode: "0755"
+
+- name: Deploy 10-dns-verify.conf to system ssh_config.d
+  copy:
+    src: ssh_config.d/10-dns-verify.conf
+    dest: /etc/ssh/ssh_config.d/10-dns-verify.conf
+    owner: root
+    mode: "0644"
+
+- name: Deploy 90-owned-domains.conf to system ssh_config.d
+  # Ships commented out -- edit on the host to enable strict SSHFP for your
+  # own domains. force: false prevents re-running from overwriting customisations.
+  copy:
+    src: ssh_config.d/90-owned-domains.conf
+    dest: /etc/ssh/ssh_config.d/90-owned-domains.conf
+    owner: root
+    mode: "0644"
+    force: false
 
 # -----------------------------------------------------------------------------
 # Homebrew OpenSSH configuration (if installed)
@@ -403,5 +427,40 @@
     regexp: '^#?\s*VerifyHostKeyDNS'
     line: '    VerifyHostKeyDNS yes'
     state: present
+  loop: "{{ brew_ssh_dirs }}"
+  when: brew_ssh_dirs | length > 0
+
+# -----------------------------------------------------------------------------
+# Deploy ssh_config.d drop-in files to Homebrew SSH config dirs
+# -----------------------------------------------------------------------------
+# Deploy the same drop-in files to any non-symlinked Homebrew SSH config dirs.
+# Skipped if brew_ssh_dirs is empty (no separate Homebrew config) or if the
+# Homebrew config is symlinked to /etc/ssh (already handled above).
+
+- name: Ensure ssh_config.d exists in Homebrew SSH dirs
+  file:
+    path: "{{ item }}/ssh_config.d"
+    state: directory
+    owner: root
+    mode: "0755"
+  loop: "{{ brew_ssh_dirs }}"
+  when: brew_ssh_dirs | length > 0
+
+- name: Deploy 10-dns-verify.conf to Homebrew ssh_config.d
+  copy:
+    src: ssh_config.d/10-dns-verify.conf
+    dest: "{{ item }}/ssh_config.d/10-dns-verify.conf"
+    owner: root
+    mode: "0644"
+  loop: "{{ brew_ssh_dirs }}"
+  when: brew_ssh_dirs | length > 0
+
+- name: Deploy 90-owned-domains.conf to Homebrew ssh_config.d
+  copy:
+    src: ssh_config.d/90-owned-domains.conf
+    dest: "{{ item }}/ssh_config.d/90-owned-domains.conf"
+    owner: root
+    mode: "0644"
+    force: false
   loop: "{{ brew_ssh_dirs }}"
   when: brew_ssh_dirs | length > 0
