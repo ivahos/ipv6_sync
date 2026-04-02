@@ -637,8 +637,24 @@
     # the chroot so the blacklist and updated initramfs are in place before
     # the first NVMe boot.
 
+    - name: Get kernel version inside chroot
+      # We need the kernel version string to install the matching headers.
+      # uname -r inside the chroot reads the running kernel version which is
+      # the same as the host kernel since we are not actually running the
+      # chroot kernel -- the chroot shares the host kernel.
+      command: chroot {{ nvme_chroot }} uname -r
+      register: chroot_kernel_version
+      changed_when: false
+
     - name: Install r8152 build dependencies inside chroot
-      command: chroot {{ nvme_chroot }} apt-get install -y git build-essential
+      # linux-headers-$(uname -r) is required to build kernel modules.
+      # On some Raspberry Pi OS images the headers are not pre-installed
+      # (unlike pi-manager images which include them). We install them
+      # explicitly using the kernel version detected above.
+      command: >
+        chroot {{ nvme_chroot }}
+        apt-get install -y git build-essential
+        linux-headers-{{ chroot_kernel_version.stdout }}
       environment:
         DEBIAN_FRONTEND: noninteractive
 
