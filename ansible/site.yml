@@ -86,14 +86,27 @@
 # -----------------------------------------------------------------------------
 # Runs only on hosts in the 'raspberry_pi' inventory group.
 #
-# When the Pi is booted from an SD card and /dev/nvme0n1 is present, this
-# play will:
-#   1. Install btrfs-progs
-#   2. Grow the NVMe partition to fill the entire device
-#   3. Convert the ext4 filesystem on the NVMe to btrfs
+# Detects how the Pi is booted:
 #
-# All steps are idempotent -- safe to re-run if already done or partially done.
-# If the Pi is not booted from SD, or has no NVMe, all NVMe tasks are skipped.
+#   Booted from SD card or USB stick (root not on NVMe):
+#     Runs the full migration sequence:
+#       1.  e2fsck -fy          clean ext4 filesystem before conversion
+#       2.  btrfs-convert       convert ext4 -> btrfs in-place
+#       3.  gdisk               convert MBR -> GPT (required for drives >2TB)
+#       4.  parted resizepart   grow partition to fill the NVMe device
+#       5.  mount + btrfs resize max
+#       6.  Update cmdline.txt  new btrfs UUID and rootfstype=btrfs
+#       7.  Rewrite fstab       correct UUIDs, optimised btrfs mount options
+#       8.  update-initramfs    rebuild initramfs inside chroot
+#       9.  Install ipv6_dns_sync into the chroot
+#       10. Build + install r8152 driver into the chroot
+#       11. Unmount everything  machine ready to shut down and remove boot media
+#
+#   Already booted from NVMe:
+#     Skips migration, performs a normal live ipv6_dns_sync install instead.
+#
+# All steps are idempotent -- safe to re-run. Cleanup on failure is guaranteed
+# by a block/rescue/always structure that always unmounts /mnt on exit.
 #
 # To add a Pi, add it to BOTH the 'linux' AND 'raspberry_pi' inventory groups.
 

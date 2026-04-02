@@ -61,11 +61,12 @@ key "keyname" {
 ```
 ├── usr/local/bin/
 │   ├── ipv6_dns_sync.py           # Sync script (macOS + Linux)
-│   ├── ipv6_dns_watch_linux.sh    # Linux watcher
-│   └── ipv6_dns_watch_macos.py    # macOS watcher
+│   ├── ipv6_dns_watch_linux.sh    # Linux watcher (bash + ip monitor)
+│   └── ipv6_dns_watch_macos.py    # macOS watcher (SystemConfiguration framework)
 │
 ├── etc/systemd/system/
-│   └── ipv6-dns-watch.service     # systemd service unit (Linux)
+│   ├── ipv6-dns-watch.service     # systemd watcher service (Linux)
+│   └── ipv6-dns-cleanup.service   # systemd shutdown cleanup service (Linux)
 │
 ├── Library/LaunchDaemons/
 │   └── au.hosteng.ipv6-dns-watch.plist  # launchd daemon config (macOS)
@@ -79,7 +80,16 @@ key "keyname" {
 ├── scripts/
 │   └── bootstrap-macos.sh         # Homebrew + Python bootstrap (called by Ansible)
 │
-└── ansible/                       # Automated deployment (see below)
+└── ansible/                       # Automated deployment (see ansible/README.md)
+    ├── site.yml                   # Main playbook (4 stages)
+    ├── site-remove.yml            # Removal playbook
+    ├── inventory/
+    │   ├── hosts.yml              # Your hosts (git-ignored, keep local)
+    │   └── host_vars/<host>.yml   # Per-host TSIG keys (git-ignored, keep local)
+    └── roles/
+        ├── ipv6_dns_sync/         # Core role: scripts + services
+        ├── raspberry_pi/          # Pi role: NVMe migration + chroot install
+        └── r8152/                 # Optional: Realtek USB network driver
 ```
 
 ---
@@ -103,9 +113,26 @@ The `ansible/` directory contains a playbook that deploys everything to any numb
    cd ipv6_sync
    ```
 
-3. Add your hosts to `ansible/inventory/hosts.yml`
+3. Add your hosts to `ansible/inventory/hosts.yml` (this file is git-ignored and stays local):
+   ```yaml
+   all:
+     children:
+       linux:
+         hosts:
+           myhost.example.com:
+             ansible_user: ubuntu
+       macos:
+         hosts:
+           mymac.example.com:
+             ansible_user: ivar
+       raspberry_pi:       # also add Pi hosts to 'linux' above
+         hosts:
+           mypi.example.com:
+             ansible_host: 192.168.1.x
+             ansible_user: ivar
+   ```
 
-4. Create a file for each host with its TSIG key:
+4. Create a file for each host with its TSIG key (also git-ignored):
    ```bash
    mkdir -p ansible/inventory/host_vars
    echo 'ipv6_tsig_key: "your-actual-tsig-key"' > ansible/inventory/host_vars/<hostname>.yml
@@ -117,8 +144,9 @@ The `ansible/` directory contains a playbook that deploys everything to any numb
    ```
 
 The playbook handles everything automatically per platform:
-- **Linux**: installs `bind9-dnsutils`, deploys scripts, enables systemd service
+- **Linux**: installs `bind9-dnsutils`, deploys scripts, enables systemd services
 - **macOS**: installs Homebrew + Xcode CLT + Python 3, creates Python venv with PyObjC, deploys scripts, loads launchd daemon
+- **Raspberry Pi**: full NVMe btrfs migration, chroot install, r8152 driver — see `ansible/README.md` for details
 
 ---
 
