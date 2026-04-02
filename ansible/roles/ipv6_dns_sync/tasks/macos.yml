@@ -353,14 +353,30 @@
   register: brew_ssh_intel
 
 - name: Set Homebrew SSH config paths
-  # Build a list of Homebrew SSH config directories that actually exist.
-  # We loop over this list for all subsequent Homebrew SSH tasks so both
-  # architectures are handled in a single set of tasks.
+  # Build a list of Homebrew SSH config directories that actually exist AND
+  # are not symlinks pointing to /etc/ssh. If a Homebrew config dir is
+  # symlinked to /etc/ssh it is the same files we already updated above --
+  # including it in the loop would just run lineinfile twice on the same
+  # file, which is harmless but redundant. We exclude it so the tasks are
+  # clean on both setups:
+  #   - Separate directories: both /etc/ssh and the Homebrew dir are updated
+  #   - Symlinked:            only /etc/ssh is updated (via the system tasks)
   set_fact:
     brew_ssh_dirs: >-
       {{
-        (['/opt/homebrew/etc/ssh'] if brew_ssh_arm.stat.exists else []) +
-        (['/usr/local/etc/ssh'] if brew_ssh_intel.stat.exists else [])
+        (
+          ['/opt/homebrew/etc/ssh']
+          if brew_ssh_arm.stat.exists
+          and not (brew_ssh_arm.stat.islnk | default(false)
+                   and brew_ssh_arm.stat.lnk_target | default('') == '/etc/ssh')
+          else []
+        ) + (
+          ['/usr/local/etc/ssh']
+          if brew_ssh_intel.stat.exists
+          and not (brew_ssh_intel.stat.islnk | default(false)
+                   and brew_ssh_intel.stat.lnk_target | default('') == '/etc/ssh')
+          else []
+        )
       }}
 
 - name: Report Homebrew SSH installations found
