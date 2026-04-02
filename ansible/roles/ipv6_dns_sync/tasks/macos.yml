@@ -323,3 +323,69 @@
     regexp: '^#?\s*VerifyHostKeyDNS'
     line: '    VerifyHostKeyDNS yes'
     state: present
+
+# -----------------------------------------------------------------------------
+# Homebrew OpenSSH configuration (if installed)
+# -----------------------------------------------------------------------------
+# The macOS system OpenSSH has a bug where SSHFP records are always treated
+# as untrusted regardless of DNSSEC validation status, making VerifyHostKeyDNS
+# ineffective. Homebrew OpenSSH is the correct version to use for SSHFP.
+#
+# Homebrew installs to different prefixes depending on architecture:
+#   Apple Silicon: /opt/homebrew
+#   Intel:         /usr/local
+#
+# We check both locations and update whichever sshd_config and ssh_config
+# files exist under Homebrew's etc/ssh/ directory.
+#
+# Note: Homebrew OpenSSH's sshd is typically run as a separate service from
+# the system sshd. If the user has switched to Homebrew sshd, updating its
+# config and reloading it ensures UseDNS yes takes effect there too.
+
+- name: Check for Homebrew OpenSSH on Apple Silicon
+  stat:
+    path: /opt/homebrew/etc/ssh
+  register: brew_ssh_arm
+
+- name: Check for Homebrew OpenSSH on Intel
+  stat:
+    path: /usr/local/etc/ssh
+  register: brew_ssh_intel
+
+- name: Set Homebrew SSH config paths
+  # Build a list of Homebrew SSH config directories that actually exist.
+  # We loop over this list for all subsequent Homebrew SSH tasks so both
+  # architectures are handled in a single set of tasks.
+  set_fact:
+    brew_ssh_dirs: >-
+      {{
+        (['/opt/homebrew/etc/ssh'] if brew_ssh_arm.stat.exists else []) +
+        (['/usr/local/etc/ssh'] if brew_ssh_intel.stat.exists else [])
+      }}
+
+- name: Report Homebrew SSH installations found
+  debug:
+    msg: >-
+      Homebrew OpenSSH config dirs found: {{ brew_ssh_dirs | join(', ') if brew_ssh_dirs else 'none' }}
+
+- name: Set UseDNS yes in Homebrew sshd_config
+  lineinfile:
+    path: "{{ item }}/sshd_config"
+    regexp: '^#?\s*UseDNS'
+    line: 'UseDNS yes'
+    state: present
+  loop: "{{ brew_ssh_dirs }}"
+  when: brew_ssh_dirs | length > 0
+  notify: Reload sshd (macOS)
+
+- name: Set VerifyHostKeyDNS yes in Homebrew ssh_config
+  # Homebrew OpenSSH correctly handles SSHFP records validated by DNSSEC,
+  # unlike the system OpenSSH which has a bug treating all SSHFP records
+  # as untrusted. This is the config that actually makes SSHFP useful.
+  lineinfile:
+    path: "{{ item }}/ssh_config"
+    regexp: '^#?\s*VerifyHostKeyDNS'
+    line: '    VerifyHostKeyDNS yes'
+    state: present
+  loop: "{{ brew_ssh_dirs }}"
+  when: brew_ssh_dirs | length > 0
