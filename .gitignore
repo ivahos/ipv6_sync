@@ -5,3 +5,8 @@ ansible/inventory/hosts.yml
 # host_vars may contain TSIG keys and other secrets.
 # Use ansible-vault to encrypt sensitive values if you need to commit them.
 ansible/inventory/host_vars/
+
+# 90-owned-domains.conf contains your personal domain list.
+# The generic commented-out version in files/ssh_config.d/ is committed.
+# Your customised local copy (deployed to hosts by the playbook) stays local.
+ansible/roles/ipv6_dns_sync/files/ssh_config.d/90-owned-domains.conf
