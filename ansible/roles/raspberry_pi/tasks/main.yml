@@ -485,6 +485,75 @@
     - name: Enable ipv6-dns-cleanup service inside chroot
       command: chroot {{ nvme_chroot }} systemctl enable ipv6-dns-cleanup.service
 
+    # =========================================================================
+    # PHASE 5b -- Install r8152 driver inside the chroot
+    # =========================================================================
+    # Mirrors what the r8152 role does on a live system, but all steps run
+    # via chroot so the driver is installed into the NVMe root before its
+    # first native boot.
+    #
+    # The build runs inside the chroot so that make uses the NVMe kernel's
+    # headers (at /usr/src/linux-headers-* inside the chroot) rather than
+    # the SD card's kernel headers, which may be a different version.
+    #
+    # The modprobe.d config and initramfs regeneration are also done inside
+    # the chroot so the blacklist and updated initramfs are in place before
+    # the first NVMe boot.
+
+    - name: Install r8152 build dependencies inside chroot
+      command: chroot {{ nvme_chroot }} apt-get install -y git build-essential
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Check whether r8152 source directory exists inside chroot
+      stat:
+        path: "{{ nvme_chroot }}/usr/local/src/realtek-r8152-linux"
+      register: r8152_chroot_src_stat
+
+    - name: Clone r8152 driver source inside chroot
+      command: >
+        chroot {{ nvme_chroot }}
+        git clone {{ r8152_repo }} /usr/local/src/realtek-r8152-linux
+      when: not r8152_chroot_src_stat.stat.exists
+
+    - name: Update r8152 driver source inside chroot
+      command: >
+        chroot {{ nvme_chroot }}
+        git -C /usr/local/src/realtek-r8152-linux pull
+      when: r8152_chroot_src_stat.stat.exists
+
+    - name: Build r8152 kernel module inside chroot
+      # make compiles r8152.ko against the NVMe root's kernel headers.
+      # This is correct because when the Pi boots natively from NVMe it will
+      # be running the NVMe kernel, not the SD card's kernel.
+      command: >
+        chroot {{ nvme_chroot }}
+        make -C /usr/local/src/realtek-r8152-linux
+
+    - name: Install r8152 kernel module inside chroot
+      # make install copies r8152.ko.xz into the NVMe's module tree and
+      # runs depmod. The Makefile also runs modprobe r8152 at the end but
+      # this will fail silently inside the chroot (no running kernel to
+      # load into) -- that is expected and harmless.
+      command: >
+        chroot {{ nvme_chroot }}
+        make -C /usr/local/src/realtek-r8152-linux install
+      failed_when: false
+
+    - name: Deploy realtek-usb modprobe config inside chroot
+      copy:
+        src: "{{ playbook_dir }}/../ansible/roles/r8152/files/realtek-usb.conf"
+        dest: "{{ nvme_chroot }}/etc/modprobe.d/realtek-usb.conf"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Regenerate initramfs inside chroot (includes r8152 blacklist)
+      # Regenerate again now that the modprobe.d blacklist is in place so
+      # it is embedded in the initramfs before first boot.
+      # The "fsck.btrfs doesn't exist" warnings are harmless.
+      command: chroot {{ nvme_chroot }} update-initramfs -u -k all
+
   rescue:
     # The block failed. The always: section below will unmount everything.
     # Here we just re-raise the failure so the play reports failed and stops.

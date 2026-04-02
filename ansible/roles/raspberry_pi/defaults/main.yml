@@ -39,6 +39,15 @@ nvme_run_btrfs_check: false
 nvme_convert_timeout: 3600
 
 # =============================================================================
+# r8152 driver variables (mirrored from r8152 role defaults)
+# =============================================================================
+# The raspberry_pi role installs the r8152 driver into the NVMe chroot during
+# Phase 5b. These must match the r8152 role defaults (or host_vars overrides).
+
+# Git repository for the out-of-tree r8152 driver.
+r8152_repo: https://github.com/wget/realtek-r8152-linux.git
+
+# =============================================================================
 # ipv6_dns_sync variables (mirrored from ipv6_dns_sync role defaults)
 # =============================================================================
 # The raspberry_pi role installs ipv6_dns_sync into the NVMe chroot during
