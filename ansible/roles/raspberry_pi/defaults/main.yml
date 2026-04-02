@@ -13,27 +13,25 @@ nvme_device: /dev/nvme0n1
 # Contains cmdline.txt, config.txt, initramfs images, and the bootloader.
 nvme_boot_partition: /dev/nvme0n1p1
 
-# The root partition — ext4, will be converted to btrfs.
-# This is the partition that gets resized and converted.
+# The root partition — ext4, will be converted to btrfs then grown to fill
+# the disk after MBR->GPT conversion.
 nvme_root_partition: /dev/nvme0n1p2
 
 # Mount point used as the chroot root during preparation.
-# The NVMe root is mounted here and all chroot operations target it.
 nvme_chroot: /mnt
 
 # Run e2fsck -fy on the ext4 partition before btrfs-convert.
-# Disabled by default because a cleanly cloned filesystem does not need it.
-# Set to true in host_vars if the clone may have been made from a live
-# mounted source, or if a previous conversion attempt was interrupted.
+# Disabled by default -- a cleanly cloned filesystem does not need it.
+# Enable in host_vars if the clone may have been made from a live mounted
+# source, or if a previous conversion attempt was interrupted.
 nvme_run_e2fsck: false
 
 # Run btrfs check --readonly after conversion to verify filesystem integrity.
-# Disabled by default because on large drives (2TB+) this can take 20-30+
-# minutes and makes the playbook appear hung. Enable if you want the extra
-# confidence of a full structural check.
+# Disabled by default -- on a 4TB drive this walks the entire filesystem tree
+# and can take 20-30+ minutes, making the playbook appear hung.
 nvme_run_btrfs_check: false
 
 # Maximum time in seconds to wait for btrfs-convert to complete.
-# btrfs-convert on a 4TB drive at 5% usage typically takes 10-20 minutes.
+# Tested at ~10 minutes on a 4TB NVMe at 5% usage on a Pi 500.
 # Raise this if your drive is larger or more heavily populated.
 nvme_convert_timeout: 3600

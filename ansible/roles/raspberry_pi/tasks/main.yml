@@ -7,30 +7,33 @@
 #
 #   Booted from SD card (root on mmcblkX):
 #     Full NVMe preparation sequence runs -- converts the NVMe root partition
-#     from ext4 to btrfs, updates boot config, installs ipv6_dns_sync into
-#     the chroot, and leaves the machine ready to shut down and boot from NVMe.
+#     from ext4 to btrfs, converts the partition table from MBR to GPT (which
+#     is required to address >2TB on a 4TB drive), grows the partition to fill
+#     the disk, and leaves the machine ready to shut down and boot from NVMe.
 #
 #   Booted from NVMe (root NOT on mmcblkX):
-#     The Pi is already running from its NVMe drive. In this case the role
-#     skips all NVMe preparation and falls through to linux.yml, performing
-#     a normal ipv6_dns_sync installation on the live running system.
+#     The Pi is already running from its NVMe drive. The role skips all NVMe
+#     preparation and falls through to linux.yml, performing a normal
+#     ipv6_dns_sync installation on the live running system.
 #
 # It is safe to run repeatedly -- every destructive step is guarded by a
 # condition that checks whether the work is already done.
 #
 # CLONED DEVICE HANDLING:
-#   When the NVMe is a block-level clone of the SD card both devices will
-#   share identical UUIDs (p1 boot UUID and p2 root UUID are the same on
-#   both disks). This is the normal outcome of tools like rpi-clone.
-#   The playbook handles this safely:
-#     - blkid -p is used to read UUIDs directly from each device rather
-#       than from the kernel's cached blkid database, avoiding ambiguity.
-#     - After btrfs-convert the NVMe root gets a new unique btrfs UUID.
-#     - The NVMe boot partition UUID is read and written into the NVMe
-#       fstab explicitly, so the NVMe fstab is self-consistent even though
-#       the boot partition UUID is still shared with the SD card.
-#     - cmdline.txt on the NVMe boot partition is updated to point to the
-#       new btrfs UUID, so the kernel finds the right root on next boot.
+#   When the NVMe is a block-level clone of the SD card both devices share
+#   identical UUIDs. blkid -p is used throughout to read UUIDs directly from
+#   each device node rather than from the kernel's cached blkid database.
+#   After btrfs-convert the NVMe root gets a new unique btrfs UUID, breaking
+#   the collision with the SD card.
+#
+# CORRECT SEQUENCE (confirmed by manual run):
+#   1. btrfs-convert          -- converts ext4 to btrfs at current partition size
+#   2. gdisk MBR->GPT         -- required before parted can address >2TB
+#   3. parted resizepart 100% -- grows partition entry to fill the disk
+#   4. mount btrfs
+#   5. btrfs filesystem resize max -- grows filesystem to fill enlarged partition
+#   6. chroot steps (boot config, initramfs, ipv6_dns_sync install)
+#   7. unmount
 #
 # FULL SEQUENCE:
 #   Phase 1 -- Detection
@@ -39,17 +42,18 @@
 #     1c. Confirm /dev/nvme0n1 exists
 #
 #   Phase 2 -- NVMe filesystem preparation (skipped if already btrfs)
-#     2a. Install btrfs-progs
-#     2b. Check filesystem type on nvme_root_partition
-#     2c. Grow the root partition to fill the device  (parted + resize2fs)
-#     2d. Run e2fsck -fy to ensure ext4 is clean before conversion
-#     2e. Convert ext4 -> btrfs                       (btrfs-convert)
-#     2f. Verify the resulting btrfs is healthy        (btrfs check --readonly)
+#     2a. Install btrfs-progs and gdisk
+#     2b. Detect filesystem type on nvme_root_partition
+#     2c. Optionally run e2fsck -fy (disabled by default, see nvme_run_e2fsck)
+#     2d. Convert ext4 -> btrfs   (btrfs-convert)
+#     2e. Convert MBR -> GPT      (gdisk, required for >2TB)
+#     2f. Grow partition to 100%  (parted resizepart)
 #
 #   Phase 3 -- Mount NVMe under /mnt
 #     3a. Mount nvme_root_partition (btrfs) on /mnt
-#     3b. Mount nvme_boot_partition (FAT32) on /mnt/boot/firmware
-#     3c. Bind-mount /proc /sys /dev /dev/pts into the chroot tree
+#     3b. Grow btrfs to fill enlarged partition (btrfs filesystem resize max)
+#     3c. Mount nvme_boot_partition (FAT32) on /mnt/boot/firmware
+#     3d. Bind-mount /proc /sys /dev /dev/pts into the chroot tree
 #
 #   Phase 4 -- Update boot configuration inside the chroot
 #     4a. Read btrfs UUID of nvme_root_partition  (blkid -p, bypasses cache)
@@ -75,10 +79,13 @@
 #     6d. Print ready-to-shutdown message
 #
 # OVERRIDE VARIABLES (set in inventory/host_vars/<hostname>.yml):
-#   nvme_device:         block device          (default: /dev/nvme0n1)
-#   nvme_boot_partition: FAT32 boot partition  (default: /dev/nvme0n1p1)
-#   nvme_root_partition: ext4/btrfs root part  (default: /dev/nvme0n1p2)
-#   nvme_chroot:         chroot mount point    (default: /mnt)
+#   nvme_device:          block device          (default: /dev/nvme0n1)
+#   nvme_boot_partition:  FAT32 boot partition  (default: /dev/nvme0n1p1)
+#   nvme_root_partition:  ext4/btrfs root part  (default: /dev/nvme0n1p2)
+#   nvme_chroot:          chroot mount point    (default: /mnt)
+#   nvme_run_e2fsck:      run e2fsck before convert (default: false)
+#   nvme_run_btrfs_check: run btrfs check after convert (default: false)
+#   nvme_convert_timeout: seconds to wait for btrfs-convert (default: 3600)
 
 
 # =============================================================================
@@ -109,10 +116,8 @@
       {% endif %}
 
 - name: Run normal Linux install if not booted from SD card
-  # The Pi is already running from its NVMe drive (or some other non-SD device).
-  # There is nothing to convert or migrate -- treat it as a normal Linux host
-  # and install ipv6_dns_sync directly onto the live running system, exactly
-  # as linux.yml would for any other Debian/Ubuntu machine.
+  # The Pi is already running from its NVMe drive. Treat it as a normal Linux
+  # host and install ipv6_dns_sync directly onto the live running system.
   include_tasks: linux.yml
   when: not booted_from_sd
 
@@ -130,8 +135,6 @@
   when: booted_from_sd
 
 # Convenience fact used in every subsequent when: clause to keep them short.
-# Only set when booted from SD -- if we fell through to linux.yml above,
-# none of the phases below are reached.
 - name: Set nvme_ready fact
   set_fact:
     nvme_ready: "{{ booted_from_sd and nvme_stat.stat.exists }}"
@@ -142,11 +145,14 @@
 # PHASE 2 -- NVMe filesystem preparation
 # =============================================================================
 
-- name: Install btrfs-progs
-  # Provides btrfs-convert, btrfs check, mkfs.btrfs.
-  # update_cache: false because linux.yml already ran apt-get update.
+- name: Install btrfs-progs and gdisk
+  # btrfs-progs: provides btrfs-convert and btrfs filesystem resize.
+  # gdisk: needed to convert the MBR partition table to GPT, which is
+  # required before parted can grow a partition beyond the 2TB MBR limit.
   apt:
-    name: btrfs-progs
+    name:
+      - btrfs-progs
+      - gdisk
     state: present
     update_cache: false
   when: nvme_ready
@@ -159,11 +165,9 @@
 
 - name: Detect filesystem type on NVMe root partition
   # blkid -p (low-level probe) reads directly from the device rather than
-  # from the kernel's cached blkid database. This is essential here because
-  # the NVMe is a clone of the SD card and both partitions share the same
-  # UUIDs -- the kernel cache may return results for the wrong device.
-  # -o value -s TYPE prints just the filesystem type string: "ext4" or "btrfs".
-  # failed_when: false because blkid exits non-zero on an unformatted device.
+  # from the kernel's cached blkid database. This is essential when the NVMe
+  # is a clone of the SD card and both partitions share the same UUID --
+  # the kernel cache may return results for the wrong device.
   command: blkid -p -o value -s TYPE {{ nvme_root_partition }}
   register: nvme_fs_type
   changed_when: false
@@ -175,60 +179,16 @@
     msg: "{{ nvme_root_partition }} filesystem: {{ nvme_fs_type.stdout | default('unknown') }}"
   when: nvme_ready and nvme_root_stat.stat.exists
 
-# ---- Grow partition to fill device (ext4 only -- skipped if already btrfs) -
-
-- name: Get NVMe device size in bytes
-  command: blockdev --getsize64 {{ nvme_device }}
-  register: nvme_size_bytes
-  changed_when: false
-  when: nvme_ready and nvme_root_stat.stat.exists and nvme_fs_type.stdout | default('') == 'ext4'
-
-- name: Get current root partition end in bytes
-  # parted machine-readable output for partition 2 looks like:
-  #   2:538968064B:62537072639B:61998104576B:ext4::;
-  # Field 3 is the end byte. We strip the trailing B.
-  shell: |
-    parted -m {{ nvme_device }} unit B print 2>/dev/null \
-      | awk -F: '$1 == "2" { gsub(/B/, "", $3); print $3 }'
-  register: nvme_part_end_bytes
-  changed_when: false
-  when: nvme_ready and nvme_root_stat.stat.exists and nvme_fs_type.stdout | default('') == 'ext4'
-
-- name: Grow NVMe root partition to fill device
-  # Only runs when partition end is more than 1 MiB short of device end.
-  # The 1 MiB tolerance handles alignment rounding and prevents a spurious
-  # changed on a device that is already fully partitioned.
-  command: parted -s {{ nvme_device }} resizepart 2 100%
-  when: >
-    nvme_ready and
-    nvme_root_stat.stat.exists and
-    nvme_fs_type.stdout | default('') == 'ext4' and
-    (nvme_size_bytes.stdout | int) - (nvme_part_end_bytes.stdout | int) > 1048576
-
-- name: Grow ext4 filesystem to fill enlarged partition
-  # resize2fs with no size argument means "fill the block device".
-  # -f forces the operation even if e2fsck has not been run recently.
-  # Safe to run a second time -- exits 0 with "nothing to do".
-  command: resize2fs -f {{ nvme_root_partition }}
-  when: >
-    nvme_ready and
-    nvme_root_stat.stat.exists and
-    nvme_fs_type.stdout | default('') == 'ext4'
-
-# ---- Check ext4 filesystem before conversion --------------------------------
+# ---- Optional e2fsck -------------------------------------------------------
 
 - name: Run e2fsck to ensure ext4 is clean before conversion
   # Disabled by default (nvme_run_e2fsck: false) because a cleanly cloned
-  # filesystem does not need it -- the clone tool unmounts the source before
-  # copying so the journal is clean. Set nvme_run_e2fsck: true in host_vars
-  # if you have reason to believe the filesystem may be dirty (e.g. the clone
-  # was made from a live mounted source, or a previous run was interrupted).
-  #
-  # When enabled:
-  #   -f = force check even if the filesystem appears clean
-  #   -y = answer yes to all repair prompts (non-interactive)
-  #   rc=0: clean, rc=1: errors found and fixed (both are success)
-  #   rc>=2: unrecoverable errors (aborts the playbook)
+  # filesystem does not need it. Enable in host_vars if the clone was made
+  # from a live mounted source or a previous run was interrupted.
+  # -f = force check even if filesystem appears clean
+  # -y = answer yes to all repair prompts (non-interactive)
+  # rc=0: clean, rc=1: errors found and fixed (both treated as success)
+  # rc>=2: unrecoverable errors (aborts the playbook)
   command: e2fsck -fy {{ nvme_root_partition }}
   register: e2fsck_result
   failed_when: e2fsck_result.rc > 1
@@ -239,39 +199,67 @@
     nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
 
-# ---- Convert ext4 -> btrfs --------------------------------------------------
+# ---- Convert ext4 -> btrfs -------------------------------------------------
 
 - name: Convert ext4 filesystem to btrfs
-  # btrfs-convert is an in-place conversion. It writes btrfs metadata into
-  # the free space of the ext4 filesystem and atomically switches the
-  # superblock. The original ext4 data is preserved in a read-only subvolume
-  # named "ext2_saved" which can be used with btrfs-convert --rollback if
-  # you need to undo the conversion.
+  # btrfs-convert performs an in-place conversion at the current partition
+  # size. The partition is grown AFTER conversion (see gdisk and parted steps
+  # below) because:
+  #   - The partition table is MBR which cannot address >2TB
+  #   - We must convert to GPT first, then resize
+  #   - btrfs filesystem resize max is run after mounting in Phase 3
   #
-  # After conversion the partition gets a new btrfs UUID, breaking the
-  # UUID collision with the SD card's root partition. The boot partition
-  # UUID (FAT32, p1) remains shared but this does not affect booting since
-  # the kernel identifies the root by its UUID in cmdline.txt, not p1.
+  # The new btrfs UUID will differ from the old ext4 UUID, breaking the
+  # UUID collision with the cloned SD card partition.
   #
-  # This is the most time-consuming step -- allow 5-15 minutes on a large
-  # drive. The filesystem MUST be unmounted, which is guaranteed by the SD
-  # boot precondition checked in Phase 1.
-  #
-  # The when: condition makes this idempotent: skipped entirely if the
-  # partition is already btrfs (e.g. from a previous run of this playbook).
+  # Skipped if already btrfs (idempotent).
   command: btrfs-convert {{ nvme_root_partition }}
   when: >
     nvme_ready and
     nvme_root_stat.stat.exists and
     nvme_fs_type.stdout | default('') == 'ext4'
   async: "{{ nvme_convert_timeout }}"
-  poll: 15      # check every 15 seconds so we see progress in the log
+  poll: 15
 
-- name: Verify btrfs filesystem after conversion
+# ---- Convert MBR -> GPT ----------------------------------------------------
+
+- name: Check current partition table type
+  # parted machine-readable output line 1 looks like:
+  #   /dev/nvme0n1:4097GB:nvme:512:512:msdos:SPCC M.2 PCIe SSD:;
+  # Field 6 is the partition table type: "msdos" (MBR) or "gpt".
+  shell: parted -m {{ nvme_device }} print 2>/dev/null | awk -F: 'NR==2 {print $6}'
+  register: nvme_ptable_type
+  changed_when: false
+  when: nvme_ready
+
+- name: Convert MBR partition table to GPT
+  # parted cannot grow a partition beyond 2TB on an MBR disk. On a 4TB NVMe
+  # the MBR limit (4294967295 sectors at 512B = 2TB) prevents resizepart.
+  # gdisk converts the existing MBR partition table to GPT in-place,
+  # preserving all existing partition entries and their data.
+  #
+  # We drive gdisk non-interactively: "w\ny\n" writes the GPT and confirms.
+  # This is idempotent: if the table is already GPT, gdisk opens it as GPT
+  # and writing it again is a no-op.
+  shell: printf 'w\ny\n' | gdisk {{ nvme_device }}
+  when: nvme_ready and nvme_ptable_type.stdout == 'msdos'
+
+# ---- Grow partition to fill device -----------------------------------------
+
+- name: Grow NVMe root partition to fill device
+  # Now that the partition table is GPT, parted can address the full 4TB.
+  # resizepart 2 100% moves the partition 2 end sector to the last usable
+  # sector on the disk. The btrfs filesystem still occupies the old smaller
+  # size at this point -- it is grown after mounting in Phase 3.
+  command: parted -s {{ nvme_device }} resizepart 2 100%
+  when: nvme_ready
+
+# ---- Optional btrfs check --------------------------------------------------
+
+- name: Verify btrfs filesystem
   # Disabled by default (nvme_run_btrfs_check: false) because on a 4TB drive
-  # btrfs check --readonly can take 20-30+ minutes walking the entire tree,
-  # making the playbook appear hung. Enable in host_vars if you want the
-  # extra confidence of a full structural check after conversion.
+  # btrfs check --readonly walks the entire filesystem tree and can take
+  # 20-30+ minutes, making the playbook appear hung.
   command: btrfs check --readonly {{ nvme_root_partition }}
   changed_when: false
   when: nvme_ready and nvme_run_btrfs_check and nvme_root_stat.stat.exists
@@ -280,11 +268,6 @@
 # =============================================================================
 # PHASE 3 -- Mount NVMe under /mnt
 # =============================================================================
-#
-# We mount the NVMe partitions into a tree rooted at nvme_chroot (/mnt by
-# default), then bind-mount the kernel pseudo-filesystems into it so that
-# tools running inside the chroot (apt, update-initramfs, systemctl) work
-# correctly.
 
 - name: Ensure chroot mount point exists
   file:
@@ -299,6 +282,15 @@
     src: "{{ nvme_root_partition }}"
     fstype: btrfs
     state: mounted
+  when: nvme_ready
+
+- name: Grow btrfs filesystem to fill enlarged partition
+  # After parted extended the partition boundary, the btrfs filesystem still
+  # thinks it is the old smaller size. btrfs filesystem resize max expands
+  # the filesystem metadata to use all available space in the partition.
+  # Must be run while the filesystem is mounted. Idempotent -- safe to run
+  # again if already at max size.
+  command: btrfs filesystem resize max {{ nvme_chroot }}
   when: nvme_ready
 
 - name: Ensure {{ nvme_chroot }}/boot/firmware mount point exists
@@ -317,7 +309,6 @@
   when: nvme_ready
 
 - name: Bind-mount /proc into chroot
-  # Needed by update-initramfs, systemctl, and many package scripts.
   mount:
     path: "{{ nvme_chroot }}/proc"
     src: /proc
@@ -327,7 +318,6 @@
   when: nvme_ready
 
 - name: Bind-mount /sys into chroot
-  # Needed by udev rules during initramfs generation.
   mount:
     path: "{{ nvme_chroot }}/sys"
     src: /sys
@@ -337,7 +327,6 @@
   when: nvme_ready
 
 - name: Bind-mount /dev into chroot
-  # Needed so device nodes are visible inside the chroot.
   mount:
     path: "{{ nvme_chroot }}/dev"
     src: /dev
@@ -347,7 +336,6 @@
   when: nvme_ready
 
 - name: Bind-mount /dev/pts into chroot
-  # Needed by apt and any tool that opens a pseudo-terminal.
   mount:
     path: "{{ nvme_chroot }}/dev/pts"
     src: /dev/pts
@@ -362,25 +350,15 @@
 # =============================================================================
 
 - name: Get btrfs UUID of NVMe root partition
-  # blkid -p (low-level probe) reads directly from the device, bypassing the
-  # kernel UUID cache. This is critical here: before conversion both the SD
-  # and NVMe root partitions had the same UUID, so the cache could return
-  # the SD card's entry instead of the NVMe's. After btrfs-convert the NVMe
-  # root has a new unique UUID -- -p ensures we read that new value.
+  # blkid -p bypasses the kernel UUID cache. After btrfs-convert the NVMe
+  # root has a new unique UUID -- -p ensures we read that new value and not
+  # the old cached ext4 UUID shared with the SD card.
   command: blkid -p -o value -s UUID {{ nvme_root_partition }}
   register: nvme_root_uuid
   changed_when: false
   when: nvme_ready
 
 - name: Get FAT32 UUID of NVMe boot partition
-  # We also read the boot partition UUID directly from the device.
-  # Even though the NVMe boot partition currently shares its UUID with the
-  # SD boot partition (both are clones), we write this UUID explicitly into
-  # the NVMe fstab so it is self-consistent. The FAT32 UUID will remain
-  # shared with the SD card's boot partition, which is harmless -- the
-  # kernel uses the root UUID from cmdline.txt to find the root filesystem,
-  # and the boot partition is identified by its mountpoint in fstab after
-  # root is mounted.
   command: blkid -p -o value -s UUID {{ nvme_boot_partition }}
   register: nvme_boot_uuid
   changed_when: false
@@ -394,10 +372,6 @@
   when: nvme_ready
 
 - name: Update root= parameter in cmdline.txt
-  # cmdline.txt is a single line of kernel parameters. The root= parameter
-  # tells the kernel which device to mount as the root filesystem.
-  # We replace whatever root=PARTUUID=... or root=UUID=... or root=/dev/...
-  # is currently there with the new btrfs UUID.
   replace:
     path: "{{ nvme_chroot }}/boot/firmware/cmdline.txt"
     regexp: 'root=\S+'
@@ -414,25 +388,19 @@
   when: nvme_ready
 
 - name: Rewrite fstab with correct UUIDs for both NVMe partitions
-  # We rewrite the two device lines in fstab rather than doing a simple
-  # regexp replace. This is safer on a cloned fstab because:
-  #   - The root line still has the old shared UUID (same as SD card)
-  #   - The boot line also has the old shared UUID
-  # A simple UUID substitution would match both lines with the same value
-  # and could corrupt the result. Instead we use blockinfile to replace
-  # both lines atomically with correct, explicit values.
-  #
-  # We preserve all other fstab lines (tmpfs, swap, etc.) by reading the
-  # current fstab, stripping the two partition lines, and prepending the
-  # corrected entries.
+  # We rewrite both partition lines rather than doing a simple regexp replace.
+  # A cloned fstab has the same UUID on both the root and boot lines so a
+  # UUID substitution would match both and corrupt the result. Instead we
+  # strip both partition lines and prepend fresh entries with the correct
+  # explicit UUIDs and fstypes, preserving all other lines unchanged
+  # (tmpfs, zram swap, etc.).
   shell: |
     FSTAB="{{ nvme_chroot }}/etc/fstab"
-    # Strip any existing lines that mount / or /boot/firmware from a block device
     OTHER=$(grep -v -E '^\s*(UUID=|PARTUUID=|LABEL=|/dev/)[^ ].*\s+(/|/boot/firmware)\s' "$FSTAB" || true)
     cat > "$FSTAB" << EOF
     # Generated by ipv6_sync ansible role (raspberry_pi)
-    UUID={{ nvme_boot_uuid.stdout }}  /boot/firmware  vfat  defaults  0  2
-    UUID={{ nvme_root_uuid.stdout }}  /               btrfs defaults  0  1
+    UUID={{ nvme_boot_uuid.stdout }}  /boot/firmware  vfat   defaults  0  2
+    UUID={{ nvme_root_uuid.stdout }}  /               btrfs  defaults  0  1
     $OTHER
     EOF
   args:
@@ -440,22 +408,15 @@
   when: nvme_ready
 
 - name: Copy resolv.conf into chroot so apt can resolve hostnames
-  # Without a working resolv.conf, apt cannot reach the Debian/Raspberry Pi
-  # OS package mirrors. We copy the SD card's resolv.conf which is already
-  # working (we are online via the SD boot).
   copy:
     src: /etc/resolv.conf
     dest: "{{ nvme_chroot }}/etc/resolv.conf"
-    remote_src: true   # both src and dest are on the remote Pi, not the controller
+    remote_src: true
   when: nvme_ready
 
 - name: Regenerate initramfs inside chroot
-  # update-initramfs rebuilds the initial RAM filesystem that the bootloader
-  # loads before the kernel mounts the root partition. It must be regenerated
-  # because the root device has changed (new UUID, filesystem type now btrfs).
-  # -u = update existing initramfs for all installed kernels
-  # -k all = rebuild for every kernel version present
-  # Run via chroot so it uses the NVMe root's kernel version and hooks.
+  # -u = update existing initramfs
+  # -k all = rebuild for every installed kernel version
   command: chroot {{ nvme_chroot }} update-initramfs -u -k all
   when: nvme_ready
 
@@ -463,16 +424,20 @@
 # =============================================================================
 # PHASE 5 -- Install ipv6_dns_sync inside the chroot
 # =============================================================================
-#
-# This mirrors exactly what linux.yml does on a normal Linux host, but every
-# file operation targets {{ nvme_chroot }}/... and every command runs via
-# chroot. The result is that the NVMe root will have ipv6_dns_sync fully
-# installed and enabled before its first native boot.
+
+- name: Remove cdrom apt source inside chroot if present
+  # A fresh Raspberry Pi OS install may have a cdrom source line that causes
+  # apt to fail when the installation media is not present.
+  lineinfile:
+    path: "{{ nvme_chroot }}/etc/apt/sources.list"
+    regexp: '^deb cdrom:'
+    state: absent
+  when: nvme_ready
 
 - name: Install bind9-dnsutils inside chroot
   # nsupdate (from bind9-dnsutils) is required by ipv6_dns_sync.py.
-  # We run apt-get inside the chroot so the package is installed into the
-  # NVMe root's dpkg database, not the SD card's.
+  # Run inside chroot so the package is installed into the NVMe root's
+  # dpkg database, not the SD card's.
   command: chroot {{ nvme_chroot }} apt-get install -y bind9-dnsutils
   environment:
     DEBIAN_FRONTEND: noninteractive
@@ -519,8 +484,6 @@
   when: nvme_ready
 
 - name: Deploy ipv6-dns-cleanup.service into chroot
-  # Uses the Jinja2 template so the config URL variable is substituted in,
-  # exactly as linux.yml does for a live host.
   template:
     src: ipv6-dns-cleanup.service.j2
     dest: "{{ nvme_chroot }}/etc/systemd/system/ipv6-dns-cleanup.service"
@@ -529,10 +492,6 @@
   when: nvme_ready
 
 - name: Enable ipv6-dns-watch service inside chroot
-  # systemctl enable creates the symlink in the systemd wants/ directory so
-  # the service starts automatically on the first native NVMe boot.
-  # We cannot use the Ansible systemd module here because there is no running
-  # systemd inside the chroot -- we call systemctl directly via chroot.
   command: chroot {{ nvme_chroot }} systemctl enable ipv6-dns-watch.service
   when: nvme_ready
 
@@ -546,8 +505,6 @@
 # =============================================================================
 #
 # Unmount in strict reverse order: deepest mounts first, root last.
-# state: unmounted calls umount and removes any entry the mount module
-# added to the host's /etc/fstab during Phase 3.
 
 - name: Unmount /dev/pts from chroot
   mount:
@@ -589,5 +546,6 @@
   debug:
     msg: >-
       NVMe boot preparation is complete. The machine is ready to shut down.
-      Remove the SD card before powering back on and the Pi will boot from the NVMe drive.
+      Remove the SD card before powering back on and the Pi will boot from
+      the NVMe drive.
   when: nvme_ready
