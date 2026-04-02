@@ -178,35 +178,33 @@
   #   target_boot_partition e.g. /dev/sda1 or /dev/nvme0n1p1
   #   target_root_partition e.g. /dev/sda2 or /dev/nvme0n1p2
   # If no matching device is found all three are set to empty string.
-  script:
-    cmd: |
-      python3 -c "
-      import json, subprocess, sys
-      boot_dev = '{{ root_device_raw.stdout }}'
-      # Strip partition suffix to get the parent device name
-      # e.g. /dev/sda2 -> sda, /dev/nvme0n1p2 -> nvme0n1
-      import re
-      boot_parent = re.sub(r'p?\d+$', '', boot_dev.replace('/dev/', ''))
-      data = json.loads(subprocess.check_output(['lsblk', '-J', '-o', 'NAME,FSTYPE,LABEL,TYPE']))
-      for dev in data['blockdevices']:
-          if dev['name'] == boot_parent:
-              continue
-          if dev.get('type') != 'disk':
-              continue
-          children = dev.get('children', [])
-          boot_part = next((c for c in children
-              if c.get('label') == 'bootfs' and c.get('fstype') == 'vfat'), None)
-          root_part = next((c for c in children
-              if c.get('label') == 'rootfs' and c.get('fstype') in ('ext4', 'btrfs')), None)
-          if boot_part and root_part:
-              print('/dev/' + dev['name'])
-              print('/dev/' + boot_part['name'])
-              print('/dev/' + root_part['name'])
-              sys.exit(0)
-      print('')
-      print('')
-      print('')
-      "
+  # We use shell rather than script so the python3 one-liner runs on the
+  # remote host using the remote Python interpreter, not a local file.
+  shell: |
+    python3 -c "
+    import json, subprocess, sys, re
+    boot_dev = '{{ root_device_raw.stdout }}'
+    boot_parent = re.sub(r'p?[0-9]+$', '', boot_dev.replace('/dev/', ''))
+    data = json.loads(subprocess.check_output(['lsblk', '-J', '-o', 'NAME,FSTYPE,LABEL,TYPE']))
+    for dev in data['blockdevices']:
+        if dev['name'] == boot_parent:
+            continue
+        if dev.get('type') != 'disk':
+            continue
+        children = dev.get('children', [])
+        boot_part = next((c for c in children
+            if c.get('label') == 'bootfs' and c.get('fstype') == 'vfat'), None)
+        root_part = next((c for c in children
+            if c.get('label') == 'rootfs' and c.get('fstype') in ('ext4', 'btrfs')), None)
+        if boot_part and root_part:
+            print('/dev/' + dev['name'])
+            print('/dev/' + boot_part['name'])
+            print('/dev/' + root_part['name'])
+            sys.exit(0)
+    print('')
+    print('')
+    print('')
+    "
   register: target_device_raw
   changed_when: false
   when: not booted_from_nvme and nvme_device == '/dev/nvme0n1'
