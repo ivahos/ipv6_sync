@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# roles/r8152/defaults/main.yml — r8152 driver role default variables
+# =============================================================================
+#
+# Override any of these in inventory/host_vars/<hostname>.yml for a specific
+# host, or in inventory/group_vars/raspberry_pi.yml to apply to all Pis.
+
+# Git repository for the out-of-tree r8152 driver.
+r8152_repo: https://github.com/wget/realtek-r8152-linux.git
+
+# Directory to clone the driver source into.
+# Using /usr/local/src keeps it in a system-wide location rather than a
+# user home directory, which is more appropriate for a system driver.
+r8152_src_dir: /usr/local/src/realtek-r8152-linux
+
+# Name of the modprobe.d config file that blacklists the generic drivers.
+r8152_modprobe_conf: /etc/modprobe.d/realtek-usb.conf

@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# roles/r8152/handlers/main.yml
+# =============================================================================
+
+- name: Regenerate initramfs
+  # Rebuilds the initramfs so the modprobe.d blacklist takes effect on the
+  # next boot. The "fsck.btrfs doesn't exist" warnings are harmless on a
+  # btrfs root filesystem and can be ignored.
+  command: update-initramfs -u
+  listen: Regenerate initramfs

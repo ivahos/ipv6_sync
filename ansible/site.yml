@@ -103,3 +103,27 @@
 
   roles:
     - raspberry_pi
+
+# -----------------------------------------------------------------------------
+# Stage 4: Realtek r8152 USB network driver (r8152 hosts only)
+# -----------------------------------------------------------------------------
+# Runs only on hosts in the 'r8152' inventory group.
+#
+# Builds and installs the out-of-tree r8152 driver from the
+# wget/realtek-r8152-linux repository, and deploys a modprobe.d config that
+# blacklists the generic cdc_ncm/cdc_ether drivers so the Realtek adapter
+# is claimed by the correct driver at boot.
+#
+# Confirmed working with:
+#   - Realtek r8157 USB 2.5G adapter
+#   - Raspberry Pi 500, Debian Trixie (6.12.47+rpt-rpi-2712)
+#
+# To add a host, add it to the 'r8152' inventory group. It does not need to
+# be a Raspberry Pi -- any Linux host with a Realtek USB adapter can use this.
+
+- name: Realtek r8152 USB driver installation
+  hosts: r8152
+  become: true
+
+  roles:
+    - r8152

@@ -1,0 +1,134 @@
+---
+# =============================================================================
+# roles/r8152/tasks/main.yml — Realtek r8152 out-of-tree driver installation
+# =============================================================================
+#
+# Installs the out-of-tree r8152 driver from the wget/realtek-r8152-linux
+# repository. This is needed for Realtek USB network adapters (r8152, r8153,
+# r8156, r8157 etc.) where the in-kernel driver does not yet support the
+# device, or the out-of-tree driver provides better performance.
+#
+# Confirmed working on:
+#   - Raspberry Pi 500, Debian Trixie (6.12.47+rpt-rpi-2712)
+#   - Realtek r8157 USB 2.5G adapter
+#
+# SEQUENCE:
+#   1. Install build dependencies (git, build-essential)
+#      Note: kernel headers are pre-installed by Raspberry Pi OS / pi-manager
+#   2. Clone or update the driver source to /usr/local/src/realtek-r8152-linux
+#   3. Build the kernel module (make)
+#   4. Install the kernel module (sudo make install)
+#   5. Deploy /etc/modprobe.d/realtek-usb.conf to blacklist generic CDC drivers
+#   6. Regenerate initramfs so the blacklist takes effect on next boot
+#      Note: "fsck.btrfs doesn't exist" warnings from update-initramfs are
+#      harmless on btrfs root systems and can be ignored.
+#
+# NON-DKMS NOTE:
+#   This role does a plain make/make install rather than using DKMS. This
+#   means the module will need to be rebuilt after every kernel update.
+#   Re-running this playbook after a kernel update will rebuild and reinstall
+#   the module for the new kernel.
+#
+# IDEMPOTENCY:
+#   - git clone is skipped if the source directory already exists; instead
+#     a git pull is run to pick up any upstream driver updates.
+#   - make install is always run -- it is fast and ensures the installed
+#     module matches the current source, even after a kernel update.
+#   - The modprobe.d file and initramfs regeneration are idempotent.
+
+
+# -----------------------------------------------------------------------------
+# Step 1: Install build dependencies
+# -----------------------------------------------------------------------------
+
+- name: Install r8152 build dependencies
+  # git and build-essential are needed to clone and compile the driver.
+  # Kernel headers are pre-installed by Raspberry Pi OS so we do not need
+  # to install linux-headers-$(uname -r) explicitly.
+  apt:
+    name:
+      - git
+      - build-essential
+    state: present
+    update_cache: false   # apt cache was updated earlier in the play
+
+# -----------------------------------------------------------------------------
+# Step 2: Clone or update driver source
+# -----------------------------------------------------------------------------
+
+- name: Check whether r8152 source directory exists
+  stat:
+    path: "{{ r8152_src_dir }}"
+  register: r8152_src_stat
+
+- name: Clone r8152 driver source
+  # Clone into /usr/local/src so the source is in a system-wide location
+  # rather than a user home directory.
+  git:
+    repo: "{{ r8152_repo }}"
+    dest: "{{ r8152_src_dir }}"
+    version: master
+  when: not r8152_src_stat.stat.exists
+
+- name: Update r8152 driver source
+  # If the source already exists, pull the latest changes. This ensures
+  # the driver is up to date without re-cloning on every run.
+  git:
+    repo: "{{ r8152_repo }}"
+    dest: "{{ r8152_src_dir }}"
+    version: master
+    update: true
+  when: r8152_src_stat.stat.exists
+  register: r8152_git_update
+
+# -----------------------------------------------------------------------------
+# Step 3: Build the kernel module
+# -----------------------------------------------------------------------------
+
+- name: Build r8152 kernel module
+  # Run make in the source directory to compile r8152.ko against the currently
+  # running kernel's headers. Must be run before make install.
+  # We run make unconditionally -- it is fast (seconds if already built) and
+  # ensures the module is compiled for the current running kernel, which is
+  # important after a kernel update.
+  make:
+    chdir: "{{ r8152_src_dir }}"
+  become: true
+
+# -----------------------------------------------------------------------------
+# Step 4: Install the kernel module
+# -----------------------------------------------------------------------------
+
+- name: Install r8152 kernel module
+  # sudo make install copies r8152.ko.xz into
+  # /lib/modules/$(uname -r)/kernel/drivers/net/usb/ and runs depmod.
+  # The Makefile also runs modprobe r8152 at the end to load the module
+  # immediately without requiring a reboot.
+  # The "missing System.map" warning from depmod is harmless on Raspberry Pi OS.
+  make:
+    chdir: "{{ r8152_src_dir }}"
+    target: install
+  become: true
+
+# -----------------------------------------------------------------------------
+# Step 5: Deploy modprobe.d blacklist
+# -----------------------------------------------------------------------------
+
+- name: Deploy realtek-usb modprobe configuration
+  # Blacklists cdc_ncm and cdc_ether so they cannot claim the Realtek adapter
+  # before r8152 loads. Without this the generic CDC drivers grab the device
+  # at boot and the adapter shows "Speed: Unknown, Link detected: no".
+  copy:
+    src: realtek-usb.conf
+    dest: "{{ r8152_modprobe_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Regenerate initramfs
+
+# -----------------------------------------------------------------------------
+# Step 6: Regenerate initramfs (via handler)
+# -----------------------------------------------------------------------------
+# The initramfs regeneration is triggered by the notify above and runs via
+# the handler in handlers/main.yml. This ensures it only runs when the
+# modprobe.d file actually changed, not on every playbook run.
