@@ -80,3 +80,26 @@
 
   roles:
     - ipv6_dns_sync
+
+# -----------------------------------------------------------------------------
+# Stage 3: Raspberry Pi NVMe preparation (Raspberry Pi hosts only)
+# -----------------------------------------------------------------------------
+# Runs only on hosts in the 'raspberry_pi' inventory group.
+#
+# When the Pi is booted from an SD card and /dev/nvme0n1 is present, this
+# play will:
+#   1. Install btrfs-progs
+#   2. Grow the NVMe partition to fill the entire device
+#   3. Convert the ext4 filesystem on the NVMe to btrfs
+#
+# All steps are idempotent -- safe to re-run if already done or partially done.
+# If the Pi is not booted from SD, or has no NVMe, all NVMe tasks are skipped.
+#
+# To add a Pi, add it to BOTH the 'linux' AND 'raspberry_pi' inventory groups.
+
+- name: Raspberry Pi NVMe preparation
+  hosts: raspberry_pi
+  become: true
+
+  roles:
+    - raspberry_pi

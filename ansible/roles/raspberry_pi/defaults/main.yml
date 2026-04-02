@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# roles/raspberry_pi/defaults/main.yml — Raspberry Pi role default variables
+# =============================================================================
+#
+# Override any of these in inventory/host_vars/<hostname>.yml for a specific
+# Pi, or in inventory/group_vars/raspberry_pi.yml for all Pis.
+
+# The NVMe block device to prepare.
+# Change this if your Pi has a different NVMe device node.
+nvme_device: /dev/nvme0n1
+
+# The partition within nvme_device that holds the filesystem to convert.
+# Most Pi NVMe setups have a single partition at p1.
+nvme_partition: /dev/nvme0n1p1

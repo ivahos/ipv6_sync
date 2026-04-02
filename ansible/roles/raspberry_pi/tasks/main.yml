@@ -1,0 +1,218 @@
+---
+# =============================================================================
+# roles/raspberry_pi/tasks/main.yml — Raspberry Pi specialised setup
+# =============================================================================
+#
+# This role is applied to hosts in the 'raspberry_pi' inventory group.
+# It handles one specific, optional task: when the Pi is booted from an SD
+# card and an NVMe drive (/dev/nvme0n1) is present, it prepares the NVMe
+# drive for use as a btrfs filesystem.
+#
+# The full sequence is:
+#   1. Detect whether we are booted from an SD card (root on mmcblkX)
+#   2. Detect whether /dev/nvme0n1 exists
+#   3. If both are true:
+#      a. Install btrfs-progs (if not already installed)
+#      b. Grow the NVMe partition to fill the entire device (idempotent)
+#      c. Convert the ext4 filesystem on the partition to btrfs (idempotent)
+#
+# SAFETY ASSUMPTIONS:
+#   - The Pi is booted from an SD card, so the NVMe is NOT mounted.
+#     btrfs-convert requires the source filesystem to be unmounted.
+#   - The NVMe has exactly one partition (/dev/nvme0n1p1) containing an
+#     ext4 filesystem. Override nvme_partition in host_vars if different.
+#   - All operations are idempotent: re-running is safe if already done.
+#
+# OVERRIDE VARIABLES (set in inventory/host_vars/<hostname>.yml):
+#   nvme_device:    the NVMe block device   (default: /dev/nvme0n1)
+#   nvme_partition: the partition to prepare (default: /dev/nvme0n1p1)
+
+# -----------------------------------------------------------------------------
+# Step 1: Detect boot device
+# -----------------------------------------------------------------------------
+# We inspect the root filesystem's device from /proc/mounts and check whether
+# it starts with "mmcblk" — the kernel device name prefix for SD/eMMC cards
+# on Raspberry Pi. If root is on mmcblk, we know we are booted from SD.
+
+- name: Get root filesystem device
+  # Read /proc/mounts, find the line for the root mount (" / "), and extract
+  # just the device field (first column). The result looks like "/dev/mmcblk0p2"
+  # when booted from SD, or "/dev/nvme0n1p1" if booted from NVMe.
+  shell: awk '$2 == "/" {print $1}' /proc/mounts
+  register: root_device_raw
+  changed_when: false
+
+- name: Determine whether booted from SD card
+  # Strip "/dev/" to get just the kernel device name, then check if it starts
+  # with "mmcblk". We use this fact in every subsequent "when:" condition so
+  # none of the NVMe tasks run if we are booted from NVMe directly.
+  set_fact:
+    booted_from_sd: "{{ root_device_raw.stdout | regex_replace('^/dev/', '') | regex_search('^mmcblk') is not none }}"
+
+- name: Report boot device
+  debug:
+    msg: >-
+      Root device: {{ root_device_raw.stdout }}
+      — booted from SD card: {{ booted_from_sd }}
+
+# -----------------------------------------------------------------------------
+# Step 2: Detect NVMe drive
+# -----------------------------------------------------------------------------
+# stat the block device path. If the device doesn't exist, stat fails and
+# "exists" will be false — we use failed_when: false so the play continues.
+
+- name: Check whether NVMe device exists
+  stat:
+    path: "{{ nvme_device }}"
+  register: nvme_stat
+
+- name: Report NVMe detection result
+  debug:
+    msg: >-
+      NVMe device {{ nvme_device }}:
+      {% if nvme_stat.stat.exists %}found{% else %}not found — skipping NVMe tasks{% endif %}
+
+# -----------------------------------------------------------------------------
+# Step 3: NVMe preparation (only when booted from SD AND NVMe is present)
+# -----------------------------------------------------------------------------
+# All tasks below carry the same "when:" guard so they are silently skipped
+# if either precondition is not met.
+
+- name: Install btrfs-progs
+  # btrfs-progs provides the btrfs-convert tool (ext4 → btrfs conversion)
+  # and the mkfs.btrfs / btrfs utilities. "state: present" is idempotent —
+  # does nothing if already installed.
+  apt:
+    name: btrfs-progs
+    state: present
+    update_cache: false   # linux.yml already ran apt update; skip repeat
+  when: booted_from_sd and nvme_stat.stat.exists
+
+# ---- Detect current partition and filesystem state -------------------------
+
+- name: Check whether NVMe partition exists
+  stat:
+    path: "{{ nvme_partition }}"
+  register: nvme_part_stat
+  when: booted_from_sd and nvme_stat.stat.exists
+
+- name: Get NVMe device size in bytes
+  # blockdev --getsize64 returns the device capacity in bytes. We use this
+  # later to compare against the partition end to decide if resizing is needed.
+  command: blockdev --getsize64 {{ nvme_device }}
+  register: nvme_size_bytes
+  changed_when: false
+  when: booted_from_sd and nvme_stat.stat.exists
+
+- name: Get current partition end (bytes)
+  # parted's machine-readable output (-m) for "unit B print" gives us a line
+  # like:  1:1048576B:62537072639B:62536024064B:ext4::;
+  # We extract field 3 (end position) and strip the trailing "B".
+  shell: |
+    parted -m {{ nvme_device }} unit B print 2>/dev/null \
+      | awk -F: '$1 == "1" { gsub(/B/, "", $3); print $3 }'
+  register: nvme_part_end_bytes
+  changed_when: false
+  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+
+- name: Detect current filesystem type on NVMe partition
+  # blkid -o value -s TYPE prints just the filesystem type string, e.g.
+  # "ext4" or "btrfs". We use this to skip conversion if already btrfs,
+  # and to skip resize2fs if the filesystem is already btrfs (resize2fs
+  # only works on ext4).
+  command: blkid -o value -s TYPE {{ nvme_partition }}
+  register: nvme_fs_type
+  changed_when: false
+  failed_when: false   # returns non-zero if no filesystem found — that's ok
+  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+
+- name: Report current NVMe state
+  debug:
+    msg: >-
+      {{ nvme_partition }}:
+      filesystem={{ nvme_fs_type.stdout | default('unknown') }},
+      partition_end={{ nvme_part_end_bytes.stdout | default('?') }}B,
+      device_size={{ nvme_size_bytes.stdout | default('?') }}B
+  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+
+# ---- Grow partition to fill the device -------------------------------------
+#
+# We only resize if the partition end is more than 1 MiB short of the device
+# end. The 1 MiB tolerance accounts for partition alignment rounding and
+# avoids a spurious "changed" on devices that are already fully used.
+# parted "resizepart 1 100%" expands the partition table entry in-place
+# without touching the data inside — safe on an unmounted partition.
+
+- name: Grow NVMe partition to fill device
+  command: parted -s {{ nvme_device }} resizepart 1 100%
+  when: >
+    booted_from_sd and
+    nvme_stat.stat.exists and
+    nvme_part_stat.stat.exists and
+    nvme_fs_type.stdout | default('') == 'ext4' and
+    (nvme_size_bytes.stdout | int) - (nvme_part_end_bytes.stdout | int) > 1048576
+
+# ---- Grow ext4 filesystem to fill the enlarged partition -------------------
+#
+# After resizepart the partition boundary has moved but the ext4 superblock
+# still describes the old, smaller size. resize2fs reads the partition's
+# new size from the block device and expands the filesystem metadata to
+# match. Passing no size argument means "fill the device". Running it a
+# second time is safe — it reports nothing to do and exits 0.
+# -f forces the check even if the filesystem was not cleanly unmounted.
+
+- name: Grow ext4 filesystem to fill enlarged partition
+  command: resize2fs -f {{ nvme_partition }}
+  when: >
+    booted_from_sd and
+    nvme_stat.stat.exists and
+    nvme_part_stat.stat.exists and
+    nvme_fs_type.stdout | default('') == 'ext4'
+
+# ---- Convert ext4 → btrfs --------------------------------------------------
+#
+# btrfs-convert performs an in-place conversion: it reads the ext4 metadata
+# and data, writes btrfs structures into the free space, and atomically
+# switches the superblock. The original ext4 data is preserved in a
+# read-only subvolume called "ext2_saved" so the conversion can be rolled
+# back with btrfs-convert --rollback if needed.
+#
+# This task is the most time-consuming — expect 1–10 minutes depending on
+# how much data is on the drive. Ansible's default task timeout is generous
+# enough for this. The filesystem must be unmounted (guaranteed by our SD
+# boot precondition).
+#
+# The "when:" skips this task if the filesystem is already btrfs, making
+# the whole role idempotent.
+
+- name: Convert ext4 filesystem to btrfs
+  command: btrfs-convert {{ nvme_partition }}
+  when: >
+    booted_from_sd and
+    nvme_stat.stat.exists and
+    nvme_part_stat.stat.exists and
+    nvme_fs_type.stdout | default('') == 'ext4'
+  # btrfs-convert can take several minutes on a large drive.
+  # Ansible's default async is synchronous (blocking) which is fine here.
+
+- name: Verify btrfs filesystem after conversion
+  # Run a quick btrfs check in read-only mode to confirm the filesystem is
+  # structurally sound after conversion. --check is read-only and safe.
+  command: btrfs check --readonly {{ nvme_partition }}
+  changed_when: false
+  when: >
+    booted_from_sd and
+    nvme_stat.stat.exists and
+    nvme_part_stat.stat.exists and
+    nvme_fs_type.stdout | default('') in ['ext4', 'btrfs']
+
+- name: Report final filesystem type
+  command: blkid -o value -s TYPE {{ nvme_partition }}
+  register: nvme_fs_type_final
+  changed_when: false
+  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
+
+- name: Show final NVMe status
+  debug:
+    msg: "{{ nvme_partition }} is now {{ nvme_fs_type_final.stdout }} — NVMe preparation complete."
+  when: booted_from_sd and nvme_stat.stat.exists and nvme_part_stat.stat.exists
