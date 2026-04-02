@@ -226,10 +226,12 @@
 # ---- Convert MBR -> GPT ----------------------------------------------------
 
 - name: Check current partition table type
-  # parted machine-readable output line 1 looks like:
+  # parted machine-readable output line 2 looks like:
   #   /dev/nvme0n1:4097GB:nvme:512:512:msdos:SPCC M.2 PCIe SSD:;
   # Field 6 is the partition table type: "msdos" (MBR) or "gpt".
-  shell: parted -m {{ nvme_device }} print 2>/dev/null | awk -F: 'NR==2 {print $6}'
+  # The shell string is quoted to prevent Ansible treating awk's {print $6}
+  # as a Jinja2 expression.
+  shell: "parted -m {{ nvme_device }} print 2>/dev/null | awk -F: 'NR==2 {print $6}'"
   register: nvme_ptable_type
   changed_when: false
   when: nvme_ready
