@@ -21,10 +21,12 @@ nvme_root_partition: /dev/nvme0n1p2
 nvme_chroot: /mnt
 
 # Run e2fsck -fy on the ext4 partition before btrfs-convert.
-# Disabled by default -- a cleanly cloned filesystem does not need it.
-# Enable in host_vars if the clone may have been made from a live mounted
-# source, or if a previous conversion attempt was interrupted.
-nvme_run_e2fsck: false
+# Enabled by default -- pi-manager leaves the filesystem requiring recovery
+# after the first-boot wizard runs, and btrfs-convert will refuse to proceed
+# without a clean e2fsck first. Safe to run on already-clean filesystems
+# (exits 0 with no changes). Disable in host_vars only if you are certain
+# the filesystem is clean and want to skip the extra step.
+nvme_run_e2fsck: true
 
 # Run btrfs check --readonly after conversion to verify filesystem integrity.
 # Disabled by default -- on a 4TB drive this walks the entire filesystem tree
