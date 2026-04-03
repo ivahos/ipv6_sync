@@ -19,6 +19,17 @@
 # with "deb cdrom:". "state: absent" means remove it if found.
 # If the line isn't there, this task does nothing (idempotent).
 
+- name: Stop packagekitd if running
+  # packagekitd (the background package manager used by desktop environments)
+  # holds the dpkg lock and causes apt to fail with "Could not get lock".
+  # We stop it before running any apt tasks. It will restart automatically
+  # if needed. failed_when: false means this task succeeds even if the
+  # service is not installed or not running.
+  systemd:
+    name: packagekit
+    state: stopped
+  failed_when: false
+
 - name: Remove cdrom apt source if present
   lineinfile:
     path: /etc/apt/sources.list
