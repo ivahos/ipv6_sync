@@ -356,6 +356,28 @@ Remove the SD card before powering back on and the Pi will boot from the NVMe dr
 Shut the Pi down, remove the SD card, and power it back on. It will boot
 from the NVMe into btrfs.
 
+### Post-migration cleanup
+
+After verifying the migrated system boots correctly and everything works,
+you can delete the `ext2_saved` rollback subvolume that `btrfs-convert`
+created. This reclaims the space used by the original ext4 filesystem
+metadata.
+
+**Only do this once you are confident the migration was successful** —
+deleting `ext2_saved` makes the conversion irreversible (`btrfs-convert
+--rollback` will no longer work).
+
+```bash
+# Delete the ext2 rollback subvolume
+sudo btrfs subvolume delete /ext2_saved
+
+# Reclaim freed block groups (usually instant at low disk usage)
+sudo btrfs balance start -dusage=0 /
+
+# Verify the result
+sudo btrfs filesystem usage /
+```
+
 ### Kernel updates
 
 The r8152 driver is installed as a plain kernel module (not DKMS). After a
