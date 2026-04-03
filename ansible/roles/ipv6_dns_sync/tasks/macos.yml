@@ -444,7 +444,7 @@
 - name: Check whether Homebrew ssh_configs include ssh_config.d
   # Run grep for each Homebrew config dir and store results keyed by dir.
   # We use a shell one-liner to return 0/1 per directory.
-  shell: "grep -qE '^\s*Include.*ssh_config\.d' {{ item }}/ssh_config && echo yes || echo no"
+  shell: grep -qE '^[[:space:]]*Include.*ssh_config\.d' {{ item }}/ssh_config && echo yes || echo no
   register: brew_ssh_include_check
   changed_when: false
   loop: "{{ brew_ssh_dirs }}"
