@@ -569,8 +569,11 @@
         regexp: '^deb cdrom:'
         state: absent
 
-    - name: Install bind9-dnsutils inside chroot
-      command: chroot {{ nvme_chroot }} apt-get install -y bind9-dnsutils
+    - name: Install packages inside chroot
+      # bind9-dnsutils: provides nsupdate, required by ipv6_dns_sync.py
+      # btrfs-progs:    provides btrfs tools (btrfs check, scrub, balance etc.)
+      #                 needed for managing the btrfs root filesystem after boot
+      command: chroot {{ nvme_chroot }} apt-get install -y bind9-dnsutils btrfs-progs
       environment:
         DEBIAN_FRONTEND: noninteractive
 
