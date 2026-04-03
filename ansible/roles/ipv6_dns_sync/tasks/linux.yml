@@ -274,16 +274,38 @@
   notify: Reload sshd
 
 # -----------------------------------------------------------------------------
-# Deploy ssh_config.d drop-in files
+# Configure SSH client VerifyHostKeyDNS
 # -----------------------------------------------------------------------------
-# Rather than modifying the system ssh_config directly, we place drop-in
-# files in /etc/ssh/ssh_config.d/ which are included automatically by
-# OpenSSH 8.2+. This keeps the system config untouched and makes our
-# changes clearly visible as a separate, named set of overrides.
+# We check whether /etc/ssh/ssh_config already has an Include directive that
+# pulls in /etc/ssh/ssh_config.d/*.conf (standard on OpenSSH 8.2+ systems).
 #
-# 10-dns-verify.conf  -- enables VerifyHostKeyDNS yes for all hosts
-# 90-owned-domains.conf -- template for strict SSHFP on your own domains
-#                          (ships commented-out, edit and re-deploy to enable)
+# If the Include is present:
+#   Deploy drop-in files to /etc/ssh/ssh_config.d/ -- the cleanest approach.
+#   /etc/ssh/ssh_config itself is left completely untouched.
+#
+# If the Include is absent (older system or custom config):
+#   Fall back to setting VerifyHostKeyDNS yes directly in /etc/ssh/ssh_config.
+
+- name: Check whether ssh_config includes ssh_config.d
+  # grep exits 0 if the Include line is found, 1 if not.
+  # We look for any Include line referencing ssh_config.d to handle
+  # variations in the exact path (e.g. /etc/ssh/ssh_config.d/*.conf
+  # vs ssh_config.d/*.conf relative path).
+  command: grep -qE '^\s*Include.*ssh_config\.d' /etc/ssh/ssh_config
+  register: ssh_config_has_include
+  changed_when: false
+  failed_when: false
+
+- name: Report ssh_config.d include status
+  debug:
+    msg: >-
+      /etc/ssh/ssh_config {% if ssh_config_has_include.rc == 0 %}
+      includes ssh_config.d -- deploying drop-in files.
+      {% else %}
+      does NOT include ssh_config.d -- setting VerifyHostKeyDNS in ssh_config directly.
+      {% endif %}
+
+# --- Path A: ssh_config.d is included -- deploy drop-in files --------------
 
 - name: Ensure /etc/ssh/ssh_config.d exists
   file:
@@ -291,24 +313,37 @@
     state: directory
     owner: root
     mode: "0755"
+  when: ssh_config_has_include.rc == 0
 
-- name: Deploy 10-dns-verify.conf
+- name: Deploy 10-dns-verify.conf to ssh_config.d
   copy:
     src: ssh_config.d/10-dns-verify.conf
     dest: /etc/ssh/ssh_config.d/10-dns-verify.conf
     owner: root
     mode: "0644"
+  when: ssh_config_has_include.rc == 0
 
-- name: Deploy 90-owned-domains.conf
-  # Ships with the Host block commented out. Edit the file on the host
-  # (or add your domains to host_vars and re-run) to enable strict SSHFP
-  # verification for your own domains.
+- name: Deploy 90-owned-domains.conf to ssh_config.d
+  # Ships with the Host block commented out -- edit on the host to enable
+  # strict SSHFP verification for your own domains. force: false means
+  # re-running the playbook never overwrites your customised version.
   copy:
     src: ssh_config.d/90-owned-domains.conf
     dest: /etc/ssh/ssh_config.d/90-owned-domains.conf
     owner: root
     mode: "0644"
     force: false
-    # force: false means we never overwrite an existing file -- if you have
-    # customised this file with your own domains, re-running the playbook
-    # will not clobber your changes.
+  when: ssh_config_has_include.rc == 0
+
+# --- Path B: no ssh_config.d include -- modify ssh_config directly ----------
+
+- name: Set VerifyHostKeyDNS yes in ssh_config (fallback)
+  # Only used when ssh_config does not include ssh_config.d.
+  # Modifies the file in-place using lineinfile, replacing any existing
+  # VerifyHostKeyDNS line (commented or not) or appending if absent.
+  lineinfile:
+    path: /etc/ssh/ssh_config
+    regexp: '^#?\s*VerifyHostKeyDNS'
+    line: '    VerifyHostKeyDNS yes'
+    state: present
+  when: ssh_config_has_include.rc != 0
