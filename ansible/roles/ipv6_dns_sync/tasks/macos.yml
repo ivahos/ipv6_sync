@@ -340,7 +340,7 @@
 
 - name: Deploy 10-dns-verify.conf to system ssh_config.d
   copy:
-    src: ssh_config.d/10-dns-verify.conf
+    src: "{{ role_path }}/files/ssh_config.d/10-dns-verify.conf"
     dest: /etc/ssh/ssh_config.d/10-dns-verify.conf
     owner: root
     mode: "0644"
@@ -348,7 +348,7 @@
 
 - name: Deploy 90-owned-domains.conf to system ssh_config.d
   copy:
-    src: ssh_config.d/90-owned-domains.conf
+    src: "{{ role_path }}/files/ssh_config.d/90-owned-domains.conf"
     dest: /etc/ssh/ssh_config.d/90-owned-domains.conf
     owner: root
     mode: "0644"
@@ -461,7 +461,7 @@
 
 - name: Deploy 10-dns-verify.conf to Homebrew ssh_config.d (when included)
   copy:
-    src: ssh_config.d/10-dns-verify.conf
+    src: "{{ role_path }}/files/ssh_config.d/10-dns-verify.conf"
     dest: "{{ item.item }}/ssh_config.d/10-dns-verify.conf"
     owner: root
     mode: "0644"
@@ -470,7 +470,7 @@
 
 - name: Deploy 90-owned-domains.conf to Homebrew ssh_config.d (when included)
   copy:
-    src: ssh_config.d/90-owned-domains.conf
+    src: "{{ role_path }}/files/ssh_config.d/90-owned-domains.conf"
     dest: "{{ item.item }}/ssh_config.d/90-owned-domains.conf"
     owner: root
     mode: "0644"

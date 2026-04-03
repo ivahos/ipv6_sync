@@ -317,7 +317,7 @@
 
 - name: Deploy 10-dns-verify.conf to ssh_config.d
   copy:
-    src: ssh_config.d/10-dns-verify.conf
+    src: "{{ role_path }}/files/ssh_config.d/10-dns-verify.conf"
     dest: /etc/ssh/ssh_config.d/10-dns-verify.conf
     owner: root
     mode: "0644"
@@ -328,7 +328,7 @@
   # strict SSHFP verification for your own domains. force: false means
   # re-running the playbook never overwrites your customised version.
   copy:
-    src: ssh_config.d/90-owned-domains.conf
+    src: "{{ role_path }}/files/ssh_config.d/90-owned-domains.conf"
     dest: /etc/ssh/ssh_config.d/90-owned-domains.conf
     owner: root
     mode: "0644"
