@@ -42,6 +42,17 @@
     state: present
     update_cache: true
 
+- name: Install btrfs-progs if root filesystem is btrfs
+  # btrfs-progs provides btrfs management tools (check, scrub, balance,
+  # filesystem resize etc.). Only installed when the root filesystem is
+  # btrfs -- i.e. on Pis that have been migrated to NVMe boot. Safe to
+  # run on non-btrfs hosts -- the task simply skips cleanly.
+  apt:
+    name: btrfs-progs
+    state: present
+    update_cache: false
+  when: ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='fstype') | first == 'btrfs'
+
 # -----------------------------------------------------------------------------
 # Create the cache directory
 # -----------------------------------------------------------------------------
