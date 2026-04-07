@@ -369,3 +369,74 @@
     line: '    VerifyHostKeyDNS yes'
     state: present
   when: ssh_config_has_include.rc != 0
+
+# -----------------------------------------------------------------------------
+# Rebuild r8152 driver after kernel update (if previously installed)
+# -----------------------------------------------------------------------------
+# The r8152 out-of-tree driver is a plain kernel module (not DKMS) so it
+# must be rebuilt whenever the kernel is updated. After a kernel upgrade the
+# new kernel package overwrites or drops the compiled module, causing the
+# generic cdc_ncm/cdc_ether driver to take over again.
+#
+# We detect whether r8152 was previously installed by checking for the
+# modprobe blacklist file deployed by the r8152 role. If it exists we
+# always rebuild and reinstall the module for the currently running kernel.
+# This is safe to run on every playbook invocation -- make is fast (seconds)
+# if the module is already built for the current kernel.
+#
+# Hosts that never had r8152 installed skip all these tasks cleanly.
+
+- name: Check whether r8152 was previously installed
+  stat:
+    path: /etc/modprobe.d/realtek-usb.conf
+  register: r8152_modprobe_stat
+
+- name: Get running kernel version for r8152 rebuild
+  command: uname -r
+  register: r8152_kernel_version
+  changed_when: false
+  when: r8152_modprobe_stat.stat.exists
+
+- name: Install r8152 build dependencies for kernel update
+  apt:
+    name:
+      - git
+      - build-essential
+      - "linux-headers-{{ r8152_kernel_version.stdout }}"
+    state: present
+    update_cache: false
+  when: r8152_modprobe_stat.stat.exists
+
+- name: Check whether r8152 source directory exists
+  stat:
+    path: /usr/local/src/realtek-r8152-linux
+  register: r8152_src_stat
+  when: r8152_modprobe_stat.stat.exists
+
+- name: Clone r8152 source if missing
+  git:
+    repo: https://github.com/wget/realtek-r8152-linux.git
+    dest: /usr/local/src/realtek-r8152-linux
+    version: master
+  when: r8152_modprobe_stat.stat.exists and not r8152_src_stat.stat.exists
+
+- name: Update r8152 source
+  git:
+    repo: https://github.com/wget/realtek-r8152-linux.git
+    dest: /usr/local/src/realtek-r8152-linux
+    version: master
+    update: true
+  when: r8152_modprobe_stat.stat.exists and r8152_src_stat.stat.exists
+
+- name: Build r8152 kernel module
+  make:
+    chdir: /usr/local/src/realtek-r8152-linux
+  when: r8152_modprobe_stat.stat.exists
+
+- name: Install r8152 kernel module
+  # Always reinstall -- ensures the module matches the currently running
+  # kernel even after a kernel upgrade replaced or removed the old module.
+  make:
+    chdir: /usr/local/src/realtek-r8152-linux
+    target: install
+  when: r8152_modprobe_stat.stat.exists
