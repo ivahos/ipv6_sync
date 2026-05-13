@@ -47,18 +47,26 @@
   register: live_kernel_version
   changed_when: false
 
-- name: Install r8152 build dependencies
-  # git and build-essential are needed to clone and compile the driver.
-  # linux-headers-$(uname -r) provides the kernel build system needed to
-  # compile out-of-tree modules. Installed explicitly since not all images
-  # include headers by default.
+- name: Install r8152 build dependencies (apt)
   apt:
     name:
       - git
       - build-essential
       - "linux-headers-{{ live_kernel_version.stdout }}"
     state: present
-    update_cache: false   # apt cache was updated earlier in the play
+    update_cache: false
+  when: ansible_pkg_mgr == 'apt'
+
+- name: Install r8152 build dependencies (dnf)
+  dnf:
+    name:
+      - git
+      - gcc
+      - make
+      - "kernel-devel-{{ live_kernel_version.stdout }}"
+    state: present
+    update_cache: false
+  when: ansible_pkg_mgr == 'dnf'
 
 # -----------------------------------------------------------------------------
 # Step 2: Clone or update driver source

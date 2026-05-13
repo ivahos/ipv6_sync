@@ -1,11 +1,21 @@
 ---
 # =============================================================================
-# tasks/linux.yml — Linux (Debian/Ubuntu) specific tasks
+# tasks/linux.yml — Linux specific tasks (Debian/Ubuntu and Fedora/RHEL)
 # =============================================================================
 #
 # This file is included by main.yml when the target host is Linux.
 # It installs dependencies, deploys files, and sets up the systemd service.
 # All tasks run as root (inherited from "become: true" in site.yml).
+#
+# Supports two package manager families detected via ansible_pkg_mgr:
+#   apt  (Debian, Ubuntu, Raspberry Pi OS)
+#   dnf  (Fedora, RHEL, Asahi Linux)
+#
+# Package name mapping:
+#   Debian/Ubuntu       Fedora/RHEL
+#   bind9-dnsutils   -> bind-utils
+#   btrfs-progs      -> btrfs-progs      (same)
+#   build-essential  -> gcc make         (equivalent)
 
 # -----------------------------------------------------------------------------
 # Remove the CDROM apt source if present
@@ -18,6 +28,14 @@
 # "regexp" is a regular expression — "^deb cdrom:" matches any line starting
 # with "deb cdrom:". "state: absent" means remove it if found.
 # If the line isn't there, this task does nothing (idempotent).
+
+- name: Detect package manager
+  # Set a fact for use in all subsequent package tasks.
+  # ansible_pkg_mgr is set by Gathering Facts and is one of:
+  #   apt  -- Debian, Ubuntu, Raspberry Pi OS
+  #   dnf  -- Fedora, RHEL, Asahi Linux
+  set_fact:
+    linux_pkg_mgr: "{{ ansible_pkg_mgr }}"
 
 - name: Stop packagekitd if running
   # packagekitd (the background package manager used by desktop environments)
@@ -35,6 +53,7 @@
     path: /etc/apt/sources.list
     regexp: '^deb cdrom:'
     state: absent
+  when: linux_pkg_mgr == 'apt'
 
 # -----------------------------------------------------------------------------
 # Install nsupdate
@@ -47,22 +66,40 @@
 # "state: present" means install it if not already installed, and do nothing
 # if it is already there (idempotent).
 
-- name: Install nsupdate (bind9-dnsutils)
+- name: Install nsupdate (bind9-dnsutils) on Debian/Ubuntu
   apt:
     name: bind9-dnsutils
     state: present
     update_cache: true
+  when: linux_pkg_mgr == 'apt'
 
-- name: Install btrfs-progs if root filesystem is btrfs
+- name: Install nsupdate (bind-utils) on Fedora/RHEL
+  dnf:
+    name: bind-utils
+    state: present
+    update_cache: true
+  when: linux_pkg_mgr == 'dnf'
+
+- name: Install btrfs-progs if root filesystem is btrfs (apt)
   # btrfs-progs provides btrfs management tools (check, scrub, balance,
   # filesystem resize etc.). Only installed when the root filesystem is
-  # btrfs -- i.e. on Pis that have been migrated to NVMe boot. Safe to
-  # run on non-btrfs hosts -- the task simply skips cleanly.
+  # btrfs -- i.e. on Pis that have been migrated to NVMe boot.
   apt:
     name: btrfs-progs
     state: present
     update_cache: false
-  when: ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='fstype') | first == 'btrfs'
+  when:
+    - linux_pkg_mgr == 'apt'
+    - ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='fstype') | first == 'btrfs'
+
+- name: Install btrfs-progs if root filesystem is btrfs (dnf)
+  dnf:
+    name: btrfs-progs
+    state: present
+    update_cache: false
+  when:
+    - linux_pkg_mgr == 'dnf'
+    - ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='fstype') | first == 'btrfs'
 
 # -----------------------------------------------------------------------------
 # Create the cache directory
@@ -397,7 +434,7 @@
   changed_when: false
   when: r8152_modprobe_stat.stat.exists
 
-- name: Install r8152 build dependencies for kernel update
+- name: Install r8152 build dependencies for kernel update (apt)
   apt:
     name:
       - git
@@ -405,7 +442,18 @@
       - "linux-headers-{{ r8152_kernel_version.stdout }}"
     state: present
     update_cache: false
-  when: r8152_modprobe_stat.stat.exists
+  when: r8152_modprobe_stat.stat.exists and linux_pkg_mgr == 'apt'
+
+- name: Install r8152 build dependencies for kernel update (dnf)
+  dnf:
+    name:
+      - git
+      - gcc
+      - make
+      - "kernel-devel-{{ r8152_kernel_version.stdout }}"
+    state: present
+    update_cache: false
+  when: r8152_modprobe_stat.stat.exists and linux_pkg_mgr == 'dnf'
 
 - name: Check whether r8152 source directory exists
   stat:
