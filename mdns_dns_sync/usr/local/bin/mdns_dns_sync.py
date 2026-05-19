@@ -16,8 +16,12 @@ PURPOSE
 -------
 This is a long-running daemon that listens for multicast DNS (mDNS / RFC 6762)
 announcements on a single network interface and synchronises the announced
-hostnames and AAAA addresses into an authoritative BIND zone via RFC 2136
-dynamic updates (nsupdate + TSIG).
+hostnames and addresses into an authoritative BIND zone via RFC 2136 dynamic
+updates (nsupdate + TSIG).
+
+By default the agent publishes AAAA records and v6 PTRs, matching the original
+ipv6_dns_sync behaviour. Set `publish_v4: true` in the config to additionally
+publish A records and v4 PTRs from the same observed mDNS announcements.
 
 It is intended as an alternative to deploying the per-host ipv6_dns_sync script
 on every machine: instead, one agent runs per VLAN/subnet in an LXC container
@@ -31,13 +35,16 @@ DESIGN NOTES
 - The agent uses python-zeroconf's RecordUpdateListener to observe raw A/AAAA
   record updates - not ServiceBrowser, which only sees service registrations
   (_http._tcp etc), and would miss hosts that announce a name without a service.
-- Per-host AAAA state is maintained in memory. On each update, we apply the
-  same "delete all AAAA, then re-add current" rule that ipv6_dns_sync uses,
-  because dangling AAAA records cause TCP connection-timeout delays in clients.
-- PTRs are also maintained: on each address change we delete the old PTR (if
-  known) and add the new one.
-- IPv6 link-local addresses (fe80::/10) are always filtered out before being
-  written to DNS - they're useless in authoritative DNS.
+- Per-host A and AAAA state is maintained in memory, tracked separately by
+  family. On each update we apply the "delete all <record-type>, then re-add
+  current" rule from ipv6_dns_sync because dangling A or AAAA records cause
+  TCP connection-timeout delays in clients. The two families are reconciled
+  independently of each other.
+- Forward and reverse zones are also tracked per-family: configure
+  `reverse_zones` for v6 reverses (ip6.arpa) and `reverse_zones_v4` for v4
+  reverses (in-addr.arpa).
+- IPv6 link-local (fe80::/10) and IPv4 link-local (169.254.0.0/16, APIPA) are
+  always filtered out before being written to DNS.
 
 ALLOWLIST / SAFETY
 ------------------
@@ -65,8 +72,14 @@ Configuration is a JSON file passed via --config. Example:
   "domain": "example.net",
   "ttl": 120,
 
+  "publish_v4": true,
+
   "reverse_zones": [
     "1111:2222:3333:10::/64"
+  ],
+
+  "reverse_zones_v4": [
+    "192.0.2.0/24"
   ],
 
   "include_prefixes": [
@@ -88,19 +101,28 @@ Field semantics:
   keyfile         BIND-format TSIG keyfile (passed to nsupdate -k). Required.
   domain          Forward zone to update. ".local" in mDNS names is replaced
                   with this domain. Required.
-  ttl             TTL for AAAA and PTR records. Default 120.
+  ttl             TTL for A/AAAA/PTR records. Default 120.
+  publish_v4      If true, also publish A records and v4 PTRs (when the
+                  matching reverse zone is configured). Default false, which
+                  preserves the v6-only behaviour of ipv6_dns_sync. Note that
+                  include_prefixes/exclude_prefixes only filter IPv6 addresses;
+                  IPv4 addresses are always published if publish_v4 is on and
+                  they're not link-local or loopback.
   reverse_zones   List of IPv6 CIDRs that the agent is authoritative for.
-                  PTRs are only written for addresses inside one of these.
-                  The reverse zone name is derived from the CIDR.
-  include_prefixes  Optional. If present, only addresses starting with one
-                    of these strings are published.
-  exclude_prefixes  Optional. Addresses starting with these strings are
-                    skipped.
+                  PTRs (ip6.arpa) are only written for addresses inside one of
+                  these. The reverse zone name is derived from the CIDR.
+  reverse_zones_v4  List of IPv4 CIDRs. v4 PTRs (in-addr.arpa) are only
+                    written for addresses inside one of these. Only relevant
+                    when publish_v4 is true.
+  include_prefixes  Optional. If present, only IPv6 addresses starting with
+                    one of these strings are published. IPv4 is unaffected.
+  exclude_prefixes  Optional. IPv6 addresses starting with these strings are
+                    skipped. IPv4 is unaffected.
   allowed_hosts   Optional list of short hostnames (without .local). If
                   present, announcements from other hosts are ignored.
                   null/missing = accept everything on the link.
   host_timeout    Seconds. If a host hasn't announced anything for this long,
-                  its AAAA/PTR records are removed. Catches sleeping laptops
+                  its A/AAAA/PTR records are removed. Catches sleeping laptops
                   that don't send mDNS "goodbye" packets. Default 3600.
   state_file      Path to a JSON file where last-published state per host is
                   persisted, so we can compute diffs across restarts and
@@ -156,9 +178,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from ipaddress import ip_address, IPv4Address, IPv6Address, IPv6Network
+from ipaddress import ip_address, IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 # python-zeroconf
@@ -219,7 +241,9 @@ class Config:
     keyfile: str
     domain: str
     ttl: int = 120
+    publish_v4: bool = False
     reverse_zones: List[IPv6Network] = field(default_factory=list)
+    reverse_zones_v4: List[IPv4Network] = field(default_factory=list)
     include_prefixes: List[str] = field(default_factory=list)
     exclude_prefixes: List[str] = field(default_factory=list)
     allowed_hosts: Optional[Set[str]] = None
@@ -256,6 +280,16 @@ def load_config(path: str) -> Config:
             continue
         rev_zones.append(IPv6Network(cidr, strict=False))
 
+    rev_zones_v4: List[IPv4Network] = []
+    for entry in raw.get("reverse_zones_v4", []) or []:
+        if isinstance(entry, dict):
+            cidr = entry.get("cidr")
+        else:
+            cidr = entry
+        if not cidr:
+            continue
+        rev_zones_v4.append(IPv4Network(cidr, strict=False))
+
     allowed = raw.get("allowed_hosts")
     if allowed is not None:
         allowed = {h.strip().lower() for h in allowed if h and h.strip()}
@@ -266,7 +300,9 @@ def load_config(path: str) -> Config:
         keyfile=str(Path(raw["keyfile"]).expanduser()),
         domain=str(raw["domain"]).rstrip("."),
         ttl=int(raw.get("ttl", 120)),
+        publish_v4=bool(raw.get("publish_v4", False)),
         reverse_zones=rev_zones,
+        reverse_zones_v4=rev_zones_v4,
         include_prefixes=list(raw.get("include_prefixes", []) or []),
         exclude_prefixes=list(raw.get("exclude_prefixes", []) or []),
         allowed_hosts=allowed,
@@ -291,6 +327,18 @@ def ipv6_to_ptr(addr: str) -> str:
     return ".".join(reversed(full_hex)) + ".ip6.arpa."
 
 
+def ipv4_to_ptr(addr: str) -> str:
+    """
+    Convert an IPv4 address into its in-addr.arpa PTR owner name.
+
+    e.g. 192.0.2.5 -> 5.2.0.192.in-addr.arpa.
+    """
+    ip = ip_address(addr)
+    if not isinstance(ip, IPv4Address):
+        raise ValueError("ipv4_to_ptr only supports IPv4")
+    return ".".join(reversed(str(ip).split("."))) + ".in-addr.arpa."
+
+
 def reverse_zone_name(net: IPv6Network) -> str:
     """
     Derive the ip6.arpa zone name from an IPv6 network.
@@ -307,10 +355,34 @@ def reverse_zone_name(net: IPv6Network) -> str:
     return ".".join(reversed(head)) + ".ip6.arpa."
 
 
+def reverse_zone_name_v4(net: IPv4Network) -> str:
+    """
+    Derive the in-addr.arpa zone name from an IPv4 network.
+
+    Only octet-aligned prefixes (/8, /16, /24, /32) map cleanly to a single
+    classful reverse zone. For non-octet-aligned prefixes (RFC 2317 style)
+    BIND uses subdomain delegations whose names vary by site convention, so
+    we default to the containing /24's reverse zone, which works for the
+    vast majority of home/lab setups.
+    """
+    if not isinstance(net.network_address, IPv4Address):
+        raise ValueError("reverse_zone_name_v4 only supports IPv4")
+    octets = str(net.network_address).split(".")
+    if net.prefixlen >= 24:
+        return ".".join(reversed(octets[:3])) + ".in-addr.arpa."
+    elif net.prefixlen >= 16:
+        return ".".join(reversed(octets[:2])) + ".in-addr.arpa."
+    elif net.prefixlen >= 8:
+        return octets[0] + ".in-addr.arpa."
+    else:
+        # Below /8 doesn't realistically occur on a LAN; fall back to /8.
+        return octets[0] + ".in-addr.arpa."
+
+
 def find_reverse_zone(addr: str, zones: List[IPv6Network]) -> Optional[IPv6Network]:
     """
-    Return the most specific configured reverse zone containing this address,
-    or None if no zone matches. Matches the longest-prefix rule in ipv6_dns_sync.
+    Return the most specific configured v6 reverse zone containing this
+    address, or None if no zone matches. Longest-prefix match.
     """
     try:
         ip = ip_address(addr)
@@ -326,25 +398,54 @@ def find_reverse_zone(addr: str, zones: List[IPv6Network]) -> Optional[IPv6Netwo
     return best[1] if best else None
 
 
+def find_reverse_zone_v4(addr: str, zones: List[IPv4Network]) -> Optional[IPv4Network]:
+    """
+    Return the most specific configured v4 reverse zone containing this
+    address, or None if no zone matches. Longest-prefix match.
+    """
+    try:
+        ip = ip_address(addr)
+    except ValueError:
+        return None
+    if not isinstance(ip, IPv4Address):
+        return None
+    best: Optional[Tuple[int, IPv4Network]] = None
+    for net in zones:
+        if ip in net:
+            if best is None or net.prefixlen > best[0]:
+                best = (net.prefixlen, net)
+    return best[1] if best else None
+
+
 def addr_passes_filters(addr: str, cfg: Config) -> bool:
     """
-    Apply include/exclude prefix filters and drop link-local/loopback.
+    Apply per-family eligibility checks:
 
-    Mirrors filter_addresses() in ipv6_dns_sync.
+    - IPv6: drop link-local / loopback / unspecified; apply
+      include_prefixes / exclude_prefixes.
+    - IPv4: drop link-local (169.254/16) / loopback / unspecified. The
+      include/exclude prefix filters are NOT applied to v4 - they were
+      designed for matching v6 prefix strings and would not behave
+      intuitively on dotted-decimal addresses.
+
+    Mirrors filter_addresses() in ipv6_dns_sync for the v6 path.
     """
     try:
         ip = ip_address(addr)
     except ValueError:
         return False
-    if not isinstance(ip, IPv6Address):
-        return False
     if ip.is_link_local or ip.is_loopback or ip.is_unspecified:
         return False
-    if cfg.include_prefixes and not any(addr.startswith(p) for p in cfg.include_prefixes):
-        return False
-    if cfg.exclude_prefixes and any(addr.startswith(p) for p in cfg.exclude_prefixes):
-        return False
-    return True
+    if isinstance(ip, IPv6Address):
+        if cfg.include_prefixes and not any(addr.startswith(p) for p in cfg.include_prefixes):
+            return False
+        if cfg.exclude_prefixes and any(addr.startswith(p) for p in cfg.exclude_prefixes):
+            return False
+        return True
+    if isinstance(ip, IPv4Address):
+        # Only publish v4 if explicitly enabled in the config.
+        return cfg.publish_v4
+    return False
 
 
 def mdns_name_to_shortname(name: str) -> Optional[str]:
@@ -371,14 +472,29 @@ def mdns_name_to_shortname(name: str) -> Optional[str]:
 @dataclass
 class HostState:
     """
-    Per-host runtime state.
+    Per-host runtime state, tracked per address family.
 
-    `published` is the set of addresses currently in DNS (i.e. what we last
-    successfully nsupdate'd into the zone). `last_seen` tracks when we last
-    received any mDNS announcement for this host, used to expire stale entries.
+    `published_v4` and `published_v6` are the sets of addresses currently in
+    DNS (i.e. what we last successfully nsupdate'd into the zone). Tracking
+    them separately means the v4 and v6 reconciliations can succeed or fail
+    independently without confusing each other's "what's published?" state.
+
+    `last_seen` tracks when we last received any mDNS announcement for this
+    host (of either family), used to expire stale entries.
     """
-    published: Set[str] = field(default_factory=set)
+    published_v4: Set[str] = field(default_factory=set)
+    published_v6: Set[str] = field(default_factory=set)
     last_seen: float = 0.0
+
+    def published_for(self, family: str) -> Set[str]:
+        """family is 'v4' or 'v6'."""
+        return self.published_v4 if family == "v4" else self.published_v6
+
+    def set_published_for(self, family: str, value: Set[str]) -> None:
+        if family == "v4":
+            self.published_v4 = value
+        else:
+            self.published_v6 = value
 
 
 class State:
@@ -402,8 +518,24 @@ class State:
             log.warning("could not read state file %s: %s; starting empty", self.path, e)
             return
         for host, entry in raw.get("hosts", {}).items():
+            # Backwards compat: older state files had a single "published"
+            # field containing only IPv6 addresses. Migrate those into
+            # published_v6 and start published_v4 empty.
+            v4 = set(entry.get("published_v4", []))
+            v6 = set(entry.get("published_v6", []))
+            if not v4 and not v6 and "published" in entry:
+                for a in entry["published"]:
+                    try:
+                        ip = ip_address(a)
+                    except ValueError:
+                        continue
+                    if isinstance(ip, IPv4Address):
+                        v4.add(a)
+                    elif isinstance(ip, IPv6Address):
+                        v6.add(a)
             self.hosts[host] = HostState(
-                published=set(entry.get("published", [])),
+                published_v4=v4,
+                published_v6=v6,
                 last_seen=float(entry.get("last_seen", 0.0)),
             )
 
@@ -413,7 +545,8 @@ class State:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "hosts": {
                 h: {
-                    "published": sorted(s.published),
+                    "published_v4": sorted(s.published_v4),
+                    "published_v6": sorted(s.published_v6),
                     "last_seen": s.last_seen,
                 }
                 for h, s in self.hosts.items()
@@ -439,69 +572,117 @@ class State:
 def build_nsupdate_script(
     host: str,
     cfg: Config,
-    current_addrs: Set[str],
-    prev_addrs: Set[str],
+    current_v6: Set[str],
+    prev_v6: Set[str],
+    current_v4: Optional[Set[str]] = None,
+    prev_v4: Optional[Set[str]] = None,
 ) -> str:
     """
     Build an nsupdate script that brings DNS into the state described by
-    current_addrs for this host.
+    current_v6 (and current_v4, when publish_v4 is enabled) for this host.
 
-    The strategy is "delete all AAAA, then re-add current" - the same approach
-    used by ipv6_dns_sync. The reasoning is identical: a dangling AAAA record
-    causes ~20s TCP connection-timeout delays in clients, so we must never
-    leave stale AAAA in DNS, even at the cost of an unnecessary delete on a
-    record that didn't change.
+    The strategy is "delete all <type>, then re-add current" - the same approach
+    used by ipv6_dns_sync. A dangling A or AAAA record causes ~20s TCP
+    connection-timeout delays in clients, so we must never leave stale forward
+    records in DNS, even at the cost of an unnecessary delete on a record that
+    didn't change.
 
-    PTR records are only touched for the diff (add new, delete removed), since
-    a stale PTR is mostly harmless (it just causes a failed reverse lookup).
+    The two families are handled independently:
+      - AAAA: delete-all-then-readd, plus per-address PTR diff against the
+        configured v6 reverse zones.
+      - A: delete-all-then-readd (only if publish_v4 is true), plus per-address
+        PTR diff against the configured v4 reverse zones.
+
+    Each family's forward delete/add happens in its own nsupdate send-block.
+    Reverse blocks are grouped per zone.
 
     Returns the nsupdate script text. If there's nothing to do, returns "".
     """
     fqdn = f"{host}.{cfg.domain}."
     lines: List[str] = []
 
-    # ---- Forward: delete-all then re-add current ----
-    forward_addrs = sorted(a for a in current_addrs if addr_passes_filters(a, cfg))
+    # Default the v4 args so callers in v6-only mode don't have to pass them.
+    if current_v4 is None:
+        current_v4 = set()
+    if prev_v4 is None:
+        prev_v4 = set()
 
-    # Only emit a forward block if there's a change or if this is the first
-    # time we're publishing the host.
-    forward_changed = (
-        set(forward_addrs) != prev_addrs
-        or (not prev_addrs and forward_addrs)
-    )
-
-    if forward_changed:
+    def _forward_block(rtype: str, current: Iterable[str], prev: Set[str]) -> None:
+        """
+        Emit one server/update/send block for the given record type, applying
+        the delete-all-then-readd rule. Only emits if there's a change or this
+        is the host's first publish.
+        """
+        fwd = sorted(a for a in current if addr_passes_filters(a, cfg))
+        changed = set(fwd) != prev or (not prev and fwd)
+        if not changed:
+            return
         lines.append(f"server {cfg.server}")
-        lines.append(f"update delete {fqdn} AAAA")
-        for a in forward_addrs:
-            lines.append(f"update add {fqdn} {cfg.ttl} AAAA {a}")
+        lines.append(f"update delete {fqdn} {rtype}")
+        for a in fwd:
+            lines.append(f"update add {fqdn} {cfg.ttl} {rtype} {a}")
         lines.append("send")
 
-    # ---- Reverse: per-address adds and removes ----
-    to_add = set(forward_addrs) - prev_addrs
-    to_del = prev_addrs - set(forward_addrs)
+    def _reverse_ops(
+        family: str,
+        current: Iterable[str],
+        prev: Set[str],
+        ops_by_zone: Dict[str, List[str]],
+    ) -> None:
+        """
+        Compute per-address PTR adds/removes for one family and accumulate
+        them into ops_by_zone (keyed by reverse zone name).
+        """
+        passing = {a for a in current if addr_passes_filters(a, cfg)}
+        to_add = passing - prev
+        to_del = prev - passing
 
-    # Group reverse ops by zone so we can emit one send-block per zone.
+        if family == "v6":
+            zones = cfg.reverse_zones
+            find = lambda a: find_reverse_zone(a, zones)
+            zone_name = reverse_zone_name
+            to_ptr = ipv6_to_ptr
+        else:
+            zones = cfg.reverse_zones_v4
+            find = lambda a: find_reverse_zone_v4(a, zones)
+            zone_name = reverse_zone_name_v4
+            to_ptr = ipv4_to_ptr
+
+        for a in sorted(to_del):
+            rz = find(a)
+            if rz is None:
+                continue
+            zn = zone_name(rz)
+            ops_by_zone.setdefault(zn, []).append(
+                f"update delete {to_ptr(a)} PTR"
+            )
+
+        for a in sorted(to_add):
+            rz = find(a)
+            if rz is None:
+                log.debug("no %s reverse zone for %s, skipping PTR", family, a)
+                continue
+            zn = zone_name(rz)
+            # Safety: delete any existing PTR for this owner name before
+            # adding. Clears stale mappings from a previous run that died
+            # between add and delete on the same name.
+            ops_by_zone.setdefault(zn, []).append(f"update delete {to_ptr(a)} PTR")
+            ops_by_zone.setdefault(zn, []).append(
+                f"update add {to_ptr(a)} {cfg.ttl} PTR {fqdn}"
+            )
+
+    # ---- Forward AAAA ----
+    _forward_block("AAAA", current_v6, prev_v6)
+
+    # ---- Forward A (only if v4 publishing is enabled) ----
+    if cfg.publish_v4:
+        _forward_block("A", current_v4, prev_v4)
+
+    # ---- Reverse: collect all PTR ops, then emit grouped by zone ----
     rev_ops: Dict[str, List[str]] = {}
-
-    for a in sorted(to_del):
-        rz = find_reverse_zone(a, cfg.reverse_zones)
-        if rz is None:
-            continue
-        zn = reverse_zone_name(rz)
-        rev_ops.setdefault(zn, []).append(f"update delete {ipv6_to_ptr(a)} PTR")
-
-    for a in sorted(to_add):
-        rz = find_reverse_zone(a, cfg.reverse_zones)
-        if rz is None:
-            log.debug("no reverse zone for %s, skipping PTR", a)
-            continue
-        zn = reverse_zone_name(rz)
-        # Safety: delete any existing PTR for this owner name before adding.
-        # Stops a stale PTR from co-existing with the new one if a previous
-        # run died between add and delete on the same name.
-        rev_ops.setdefault(zn, []).append(f"update delete {ipv6_to_ptr(a)} PTR")
-        rev_ops.setdefault(zn, []).append(f"update add {ipv6_to_ptr(a)} {cfg.ttl} PTR {fqdn}")
+    _reverse_ops("v6", current_v6, prev_v6, rev_ops)
+    if cfg.publish_v4:
+        _reverse_ops("v4", current_v4, prev_v4, rev_ops)
 
     for _zn, ops in rev_ops.items():
         if not ops:
@@ -666,44 +847,61 @@ class Agent:
 
     def reconcile_host(self, short: str, full_name: str) -> None:
         """
-        Look up the host's currently-announced AAAA addresses (from the
-        zeroconf cache), compute the diff against last-published state, and
-        run nsupdate if needed.
+        Look up the host's currently-announced A and AAAA addresses (from the
+        zeroconf cache), compute the per-family diff against last-published
+        state, and run nsupdate if needed.
         """
         if self.cfg.allowed_hosts is not None and short not in self.cfg.allowed_hosts:
             log.debug("ignoring %s (not in allowed_hosts)", short)
             return
 
-        announced = self.lookup_addrs(full_name)
-        if not announced:
-            # Host has no live AAAA in the cache right now. Could be a TTL
-            # expiry, or just A-only (IPv4). Don't tear down records yet -
-            # the sweep_stale() pass will remove records if the host stays
-            # silent for host_timeout seconds. This avoids flapping on TTL
-            # boundaries where zeroconf briefly has no record between
-            # announcements.
-            log.debug("%s: no announced AAAA at this moment, skipping", short)
-            # Still update last_seen so the sweep doesn't expire a host that's
-            # actively announcing A-only.
+        announced_v6, announced_v4 = self.lookup_addrs(full_name)
+
+        # We always look at AAAA; we only consider A if v4 publishing is on.
+        if not self.cfg.publish_v4:
+            announced_v4 = set()
+
+        if not announced_v6 and not announced_v4:
+            # Host has nothing usable in the cache right now. Could be a TTL
+            # expiry, or the host only announced something we filtered out.
+            # Don't tear down records yet - sweep_stale() will remove them
+            # if the host stays silent for host_timeout seconds. This avoids
+            # flapping on TTL boundaries between announcements.
+            log.debug("%s: nothing to publish at this moment, skipping", short)
+            # Still update last_seen so the sweep doesn't expire a host that
+            # is actively announcing records we just don't accept.
             self._touch(short)
             return
 
         with self.state.lock:
             hs = self.state.hosts.setdefault(short, HostState())
-            prev = set(hs.published)
+            prev_v6 = set(hs.published_v6)
+            prev_v4 = set(hs.published_v4)
             hs.last_seen = time.time()
 
-        script = build_nsupdate_script(short, self.cfg, announced, prev)
+        script = build_nsupdate_script(
+            short, self.cfg,
+            current_v6=announced_v6, prev_v6=prev_v6,
+            current_v4=announced_v4, prev_v4=prev_v4,
+        )
         if not script:
             log.debug("%s: no change", short)
             return
 
-        log.info(
-            "%s: prev=%s announced=%s",
-            short,
-            sorted(prev),
-            sorted(announced),
-        )
+        # Log the diff per family. Only include v4 in the log if it's active
+        # or has been published before, to keep the line short in v6-only mode.
+        if self.cfg.publish_v4 or prev_v4 or announced_v4:
+            log.info(
+                "%s: v6 prev=%s announced=%s | v4 prev=%s announced=%s",
+                short,
+                sorted(prev_v6), sorted(announced_v6),
+                sorted(prev_v4), sorted(announced_v4),
+            )
+        else:
+            log.info(
+                "%s: prev=%s announced=%s",
+                short, sorted(prev_v6), sorted(announced_v6),
+            )
 
         if run_nsupdate(script, self.cfg, self.preview):
             # Update in-memory state regardless of preview mode, so that
@@ -712,30 +910,35 @@ class Agent:
             # to disk when not in preview mode.
             with self.state.lock:
                 hs = self.state.hosts.setdefault(short, HostState())
-                hs.published = {
-                    a for a in announced if addr_passes_filters(a, self.cfg)
+                hs.published_v6 = {
+                    a for a in announced_v6 if addr_passes_filters(a, self.cfg)
                 }
+                if self.cfg.publish_v4:
+                    hs.published_v4 = {
+                        a for a in announced_v4 if addr_passes_filters(a, self.cfg)
+                    }
                 hs.last_seen = time.time()
             if not self.preview:
                 self.state.save()
 
-    def lookup_addrs(self, full_name: str) -> Set[str]:
+    def lookup_addrs(self, full_name: str) -> Tuple[Set[str], Set[str]]:
         """
-        Return the AAAA addresses currently in the zeroconf cache for this
-        owner name. Skips link-local and any address that fails our filters.
+        Return (v6_addresses, v4_addresses) currently in the zeroconf cache
+        for this owner name. Each set is already filtered by addr_passes_filters.
 
         We rely on the zeroconf cache's own TTL tracking rather than building
         our own TTL state - the library already handles RFC 6762 expiry.
         """
         if self.zc is None:
-            return set()
-        addrs: Set[str] = set()
+            return set(), set()
+        v6_addrs: Set[str] = set()
+        v4_addrs: Set[str] = set()
         # The cache stores records by name lowercased and trailing-dot-normalised.
         cache_name = full_name.lower()
         if not cache_name.endswith("."):
             cache_name += "."
 
-        # get_all_by_details returns all live (non-expired) records.
+        # AAAA
         for rec in self.zc.cache.get_all_by_details(cache_name, _TYPE_AAAA, 1):
             if not isinstance(rec, DNSAddress):
                 continue
@@ -747,8 +950,32 @@ class Agent:
                 continue
             s = str(ip)
             if addr_passes_filters(s, self.cfg):
-                addrs.add(s)
-        return addrs
+                v6_addrs.add(s)
+
+        # A - we always read these, but reconcile_host discards them if
+        # publish_v4 is off. Reading is cheap; this keeps the data flow
+        # symmetric and means turning publish_v4 on at runtime doesn't need
+        # to wait for the next mDNS announcement to populate v4.
+        for rec in self.zc.cache.get_all_by_details(cache_name, _TYPE_A, 1):
+            if not isinstance(rec, DNSAddress):
+                continue
+            try:
+                ip = ip_address(rec.address) if isinstance(rec.address, str) else IPv4Address(rec.address)
+            except Exception:
+                continue
+            if not isinstance(ip, IPv4Address):
+                continue
+            s = str(ip)
+            # Only call addr_passes_filters once we know publish_v4 is on -
+            # otherwise it would reject the v4 address unconditionally and
+            # we'd never even see it in the lookup result. We let v4 through
+            # here and let reconcile_host's publish_v4 check decide whether
+            # to use it.
+            if self.cfg.publish_v4 and not addr_passes_filters(s, self.cfg):
+                continue
+            v4_addrs.add(s)
+
+        return v6_addrs, v4_addrs
 
     def _touch(self, short: str) -> None:
         with self.state.lock:
@@ -761,28 +988,36 @@ class Agent:
         """
         Remove records for hosts that haven't been seen in host_timeout
         seconds. Catches sleeping laptops and devices that disappear without
-        sending mDNS goodbye packets.
+        sending mDNS goodbye packets. Both v4 and v6 records are removed
+        together since "host is gone" applies to both families.
         """
         stale: List[str] = []
         with self.state.lock:
             for short, hs in self.state.hosts.items():
-                if not hs.published:
+                if not hs.published_v6 and not hs.published_v4:
                     continue
                 if now - hs.last_seen > self.cfg.host_timeout:
                     stale.append(short)
 
         for short in stale:
             with self.state.lock:
-                prev = set(self.state.hosts[short].published)
+                prev_v6 = set(self.state.hosts[short].published_v6)
+                prev_v4 = set(self.state.hosts[short].published_v4)
+                age = now - self.state.hosts[short].last_seen
             log.info("%s: timed out, removing records (last_seen %.0fs ago)",
-                     short, now - self.state.hosts[short].last_seen)
-            script = build_nsupdate_script(short, self.cfg, set(), prev)
+                     short, age)
+            script = build_nsupdate_script(
+                short, self.cfg,
+                current_v6=set(), prev_v6=prev_v6,
+                current_v4=set(), prev_v4=prev_v4,
+            )
             if script and run_nsupdate(script, self.cfg, self.preview):
                 # Clear in-memory state regardless of preview mode so a
                 # subsequent re-announcement (or the next sweep) doesn't keep
                 # generating the same removal.
                 with self.state.lock:
-                    self.state.hosts[short].published = set()
+                    self.state.hosts[short].published_v6 = set()
+                    self.state.hosts[short].published_v4 = set()
                 if not self.preview:
                     self.state.save()
 
@@ -806,8 +1041,10 @@ class Agent:
         ip_version = IPVersion.V4Only if isinstance(iface_ip, IPv4Address) else IPVersion.V6Only
 
         log.info(
-            "starting mdns_dns_sync: interface=%s server=%s domain=%s preview=%s",
-            iface, self.cfg.server, self.cfg.domain, self.preview,
+            "starting mdns_dns_sync: interface=%s server=%s domain=%s "
+            "publish_v4=%s preview=%s",
+            iface, self.cfg.server, self.cfg.domain,
+            self.cfg.publish_v4, self.preview,
         )
         if self.cfg.allowed_hosts is not None:
             log.info("allowed_hosts: %s", sorted(self.cfg.allowed_hosts))
@@ -848,21 +1085,26 @@ class Agent:
 
     def shutdown_cleanup(self) -> int:
         """
-        Remove all records for every host currently in state_file and clear
-        state. Run this when retiring the agent for a VLAN so you don't leave
-        stale records in the zone.
+        Remove all records (v4 and v6) for every host currently in state_file
+        and clear state. Run this when retiring the agent for a VLAN so you
+        don't leave stale records in the zone.
         """
         log.info("shutdown cleanup: removing all known host records")
         with self.state.lock:
             known = dict(self.state.hosts)
         for short, hs in known.items():
-            if not hs.published:
+            if not hs.published_v6 and not hs.published_v4:
                 continue
-            script = build_nsupdate_script(short, self.cfg, set(), set(hs.published))
+            script = build_nsupdate_script(
+                short, self.cfg,
+                current_v6=set(), prev_v6=set(hs.published_v6),
+                current_v4=set(), prev_v4=set(hs.published_v4),
+            )
             if script and run_nsupdate(script, self.cfg, self.preview):
                 if not self.preview:
                     with self.state.lock:
-                        self.state.hosts[short].published = set()
+                        self.state.hosts[short].published_v6 = set()
+                        self.state.hosts[short].published_v4 = set()
         if not self.preview:
             self.state.save()
         return 0
@@ -874,7 +1116,9 @@ class Agent:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Listen for mDNS announcements on a single interface and "
-                    "sync hostnames/AAAA into a BIND zone via nsupdate+TSIG.",
+                    "sync hostnames into a BIND zone via nsupdate+TSIG. "
+                    "AAAA records are published by default; set publish_v4 in "
+                    "the config to also publish A records.",
     )
     ap.add_argument(
         "--config", required=True,

@@ -15,12 +15,20 @@
 
   "ttl": 120,
 
-  "_comment_reverse_zones": "IPv6 CIDRs the agent is authoritative for. PTRs are only written for addresses inside one of these. The reverse zone name is derived from each CIDR (must be nibble-aligned, which BIND delegations always are).",
+  "_comment_publish_v4": "If true, also publish A records and (when reverse_zones_v4 covers them) v4 PTRs. Default false matches the v6-only behaviour of ipv6_dns_sync.",
+  "publish_v4": false,
+
+  "_comment_reverse_zones": "IPv6 CIDRs the agent is authoritative for. v6 PTRs are only written for addresses inside one of these. The reverse zone name is derived from each CIDR (must be nibble-aligned, which BIND delegations always are).",
   "reverse_zones": [
     "2001:db8:10::/64"
   ],
 
-  "_comment_filters": "Optional. Only publish addresses starting with one of include_prefixes (if set), and skip any starting with exclude_prefixes.",
+  "_comment_reverse_zones_v4": "IPv4 CIDRs the agent is authoritative for. v4 PTRs (in-addr.arpa) are only written for addresses inside one of these. Only relevant when publish_v4 is true.",
+  "reverse_zones_v4": [
+    "192.0.2.0/24"
+  ],
+
+  "_comment_filters": "Optional. Only publish IPv6 addresses starting with one of include_prefixes (if set), and skip any starting with exclude_prefixes. These filters apply ONLY to v6 - v4 addresses are unaffected.",
   "include_prefixes": [
     "2001:db8:10:"
   ],
@@ -29,7 +37,7 @@
   "_comment_allowed_hosts": "Optional allowlist of short hostnames (without .local). When present, announcements from other hosts on the link are ignored. When absent/null, all announcements on the link are accepted. Use null on trusted management VLANs; use a list on VLANs that may carry guest/IoT devices.",
   "allowed_hosts": null,
 
-  "_comment_host_timeout": "Seconds. If a host hasn't announced anything for this long, its AAAA/PTR records are removed. Catches sleeping laptops that don't send mDNS goodbye packets.",
+  "_comment_host_timeout": "Seconds. If a host hasn't announced anything for this long, its records (v4 and v6) are removed. Catches sleeping laptops that don't send mDNS goodbye packets.",
   "host_timeout": 3600,
 
   "state_file": "/var/cache/mdns_dns_sync/state.json"

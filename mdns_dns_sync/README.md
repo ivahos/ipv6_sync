@@ -2,8 +2,13 @@
 
 A long-running daemon that listens for multicast DNS (mDNS / RFC 6762)
 announcements on a single network interface and synchronises the announced
-hostnames and IPv6 addresses into an authoritative BIND zone via RFC 2136
+hostnames and addresses into an authoritative BIND zone via RFC 2136
 dynamic updates (`nsupdate` + TSIG).
+
+By default the agent publishes AAAA records and IPv6 PTRs, matching the
+original `ipv6_dns_sync` behaviour. Set `publish_v4: true` in the config
+(along with `reverse_zones_v4`) to additionally publish A records and IPv4
+PTRs from the same mDNS announcements.
 
 This is an alternative deployment model to `ipv6_dns_sync`. Instead of
 running a sync script on every host, you run one agent per VLAN/subnet on
