@@ -28,11 +28,17 @@
     "192.0.2.0/24"
   ],
 
-  "_comment_filters": "Optional. Only publish IPv6 addresses starting with one of include_prefixes (if set), and skip any starting with exclude_prefixes. These filters apply ONLY to v6 - v4 addresses are unaffected.",
+  "_comment_filters": "Optional. The agent receives mDNS announcements from EVERY interface in the container's network namespace (a known zeroconf/Linux multicast quirk - binding to an interface IP only controls send, not receive). Use these filters to scope each per-VLAN agent to addresses that actually belong on its VLAN. String-prefix match.",
   "include_prefixes": [
     "2001:db8:10:"
   ],
   "exclude_prefixes": [],
+
+  "_comment_filters_v4": "IPv4 counterparts. Only relevant when publish_v4 is true. Same defense-in-depth role as include_prefixes for v6.",
+  "include_prefixes_v4": [
+    "192.0.2."
+  ],
+  "exclude_prefixes_v4": [],
 
   "_comment_allowed_hosts": "Optional allowlist of short hostnames (without .local). When present, announcements from other hosts on the link are ignored. When absent/null, all announcements on the link are accepted. Use null on trusted management VLANs; use a list on VLANs that may carry guest/IoT devices.",
   "allowed_hosts": null,

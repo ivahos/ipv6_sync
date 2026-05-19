@@ -83,9 +83,14 @@ Configuration is a JSON file passed via --config. Example:
   ],
 
   "include_prefixes": [
-    "1111:2222:3333:"
+    "1111:2222:3333:10:"
   ],
   "exclude_prefixes": [],
+
+  "include_prefixes_v4": [
+    "192.0.2."
+  ],
+  "exclude_prefixes_v4": [],
 
   "allowed_hosts": null,
 
@@ -115,9 +120,17 @@ Field semantics:
                     written for addresses inside one of these. Only relevant
                     when publish_v4 is true.
   include_prefixes  Optional. If present, only IPv6 addresses starting with
-                    one of these strings are published. IPv4 is unaffected.
+                    one of these strings are published. Use this to scope
+                    each per-VLAN agent to its own prefix as defense against
+                    cross-VLAN multicast leakage (e.g. Windows hosts that
+                    autoconfigure on every prefix they see).
   exclude_prefixes  Optional. IPv6 addresses starting with these strings are
-                    skipped. IPv4 is unaffected.
+                    skipped.
+  include_prefixes_v4  Optional. Same as include_prefixes but for IPv4
+                       (dotted-decimal string-prefix match). e.g.
+                       ["192.168.123."] confines a VLAN 1 agent to its own
+                       v4 subnet.
+  exclude_prefixes_v4  Optional. IPv4 counterpart of exclude_prefixes.
   allowed_hosts   Optional list of short hostnames (without .local). If
                   present, announcements from other hosts are ignored.
                   null/missing = accept everything on the link.
@@ -246,6 +259,8 @@ class Config:
     reverse_zones_v4: List[IPv4Network] = field(default_factory=list)
     include_prefixes: List[str] = field(default_factory=list)
     exclude_prefixes: List[str] = field(default_factory=list)
+    include_prefixes_v4: List[str] = field(default_factory=list)
+    exclude_prefixes_v4: List[str] = field(default_factory=list)
     allowed_hosts: Optional[Set[str]] = None
     host_timeout: int = 3600
     state_file: str = "/var/cache/mdns_dns_sync/state.json"
@@ -305,6 +320,8 @@ def load_config(path: str) -> Config:
         reverse_zones_v4=rev_zones_v4,
         include_prefixes=list(raw.get("include_prefixes", []) or []),
         exclude_prefixes=list(raw.get("exclude_prefixes", []) or []),
+        include_prefixes_v4=list(raw.get("include_prefixes_v4", []) or []),
+        exclude_prefixes_v4=list(raw.get("exclude_prefixes_v4", []) or []),
         allowed_hosts=allowed,
         host_timeout=int(raw.get("host_timeout", 3600)),
         state_file=str(Path(raw.get("state_file", "/var/cache/mdns_dns_sync/state.json")).expanduser()),
@@ -422,11 +439,11 @@ def addr_passes_filters(addr: str, cfg: Config) -> bool:
     Apply per-family eligibility checks:
 
     - IPv6: drop link-local / loopback / unspecified; apply
-      include_prefixes / exclude_prefixes.
-    - IPv4: drop link-local (169.254/16) / loopback / unspecified. The
-      include/exclude prefix filters are NOT applied to v4 - they were
-      designed for matching v6 prefix strings and would not behave
-      intuitively on dotted-decimal addresses.
+      include_prefixes / exclude_prefixes (string-prefix match on the
+      canonical form).
+    - IPv4: drop link-local (169.254/16) / loopback / unspecified; apply
+      include_prefixes_v4 / exclude_prefixes_v4 (string-prefix match on
+      the dotted-decimal form). Also requires publish_v4 to be true.
 
     Mirrors filter_addresses() in ipv6_dns_sync for the v6 path.
     """
@@ -444,7 +461,13 @@ def addr_passes_filters(addr: str, cfg: Config) -> bool:
         return True
     if isinstance(ip, IPv4Address):
         # Only publish v4 if explicitly enabled in the config.
-        return cfg.publish_v4
+        if not cfg.publish_v4:
+            return False
+        if cfg.include_prefixes_v4 and not any(addr.startswith(p) for p in cfg.include_prefixes_v4):
+            return False
+        if cfg.exclude_prefixes_v4 and any(addr.startswith(p) for p in cfg.exclude_prefixes_v4):
+            return False
+        return True
     return False
 
 
