@@ -706,13 +706,17 @@ class Agent:
         )
 
         if run_nsupdate(script, self.cfg, self.preview):
+            # Update in-memory state regardless of preview mode, so that
+            # repeated announcements of the same address set from the same
+            # host don't keep generating "would-send" events. Only persist
+            # to disk when not in preview mode.
+            with self.state.lock:
+                hs = self.state.hosts.setdefault(short, HostState())
+                hs.published = {
+                    a for a in announced if addr_passes_filters(a, self.cfg)
+                }
+                hs.last_seen = time.time()
             if not self.preview:
-                with self.state.lock:
-                    hs = self.state.hosts.setdefault(short, HostState())
-                    hs.published = {
-                        a for a in announced if addr_passes_filters(a, self.cfg)
-                    }
-                    hs.last_seen = time.time()
                 self.state.save()
 
     def lookup_addrs(self, full_name: str) -> Set[str]:
@@ -774,9 +778,12 @@ class Agent:
                      short, now - self.state.hosts[short].last_seen)
             script = build_nsupdate_script(short, self.cfg, set(), prev)
             if script and run_nsupdate(script, self.cfg, self.preview):
+                # Clear in-memory state regardless of preview mode so a
+                # subsequent re-announcement (or the next sweep) doesn't keep
+                # generating the same removal.
+                with self.state.lock:
+                    self.state.hosts[short].published = set()
                 if not self.preview:
-                    with self.state.lock:
-                        self.state.hosts[short].published = set()
                     self.state.save()
 
     # ---- lifecycle ----
@@ -873,15 +880,16 @@ def main() -> int:
         "--config", required=True,
         help="Path to JSON config file (see top of script for schema).",
     )
-    mx = ap.add_mutually_exclusive_group()
-    mx.add_argument(
+    ap.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Verbose (DEBUG-level) logging.",
+        help="Verbose (DEBUG-level) logging. Combinable with --preview.",
     )
-    mx.add_argument(
+    ap.add_argument(
         "-p", "--preview", action="store_true",
         help="Preview mode: log nsupdate scripts but do not run them and do "
-             "not update state.",
+             "not persist state to disk. In-memory state is still tracked so "
+             "you see realistic diffs across multiple announcements from the "
+             "same host.",
     )
     ap.add_argument(
         "--shutdown", action="store_true",
