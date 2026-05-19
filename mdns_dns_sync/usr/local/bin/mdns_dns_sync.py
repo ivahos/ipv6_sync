@@ -92,6 +92,8 @@ Configuration is a JSON file passed via --config. Example:
   ],
   "exclude_prefixes_v4": [],
 
+  "prefer_named_ptrs": true,
+
   "allowed_hosts": null,
 
   "host_timeout": 3600,
@@ -131,6 +133,14 @@ Field semantics:
                        ["192.168.123."] confines a VLAN 1 agent to its own
                        v4 subnet.
   exclude_prefixes_v4  Optional. IPv4 counterpart of exclude_prefixes.
+  prefer_named_ptrs  Optional bool, default true. When a host announces
+                     under a UUID-style name (canonical 8-4-4-4-12 hex),
+                     it won't claim PTR records that another host has
+                     already published. Friendly (non-UUID) hosts always
+                     take priority for PTRs. Forward records (AAAA/A)
+                     are still published under both names so resolution
+                     works either way. Set to false to disable and treat
+                     UUID-named hosts the same as any other.
   allowed_hosts   Optional list of short hostnames (without .local). If
                   present, announcements from other hosts are ignored.
                   null/missing = accept everything on the link.
@@ -182,6 +192,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -264,6 +275,7 @@ class Config:
     allowed_hosts: Optional[Set[str]] = None
     host_timeout: int = 3600
     state_file: str = "/var/cache/mdns_dns_sync/state.json"
+    prefer_named_ptrs: bool = True
 
 
 def load_config(path: str) -> Config:
@@ -325,6 +337,7 @@ def load_config(path: str) -> Config:
         allowed_hosts=allowed,
         host_timeout=int(raw.get("host_timeout", 3600)),
         state_file=str(Path(raw.get("state_file", "/var/cache/mdns_dns_sync/state.json")).expanduser()),
+        prefer_named_ptrs=bool(raw.get("prefer_named_ptrs", True)),
     )
 
 
@@ -434,6 +447,31 @@ def find_reverse_zone_v4(addr: str, zones: List[IPv4Network]) -> Optional[IPv4Ne
     return best[1] if best else None
 
 
+# Canonical UUID format: 8-4-4-4-12 hex digits, case-insensitive. Matches
+# the kind of name Apple devices (notably HomePods) sometimes announce
+# alongside their friendly hostname, e.g.
+#     dd533fcf-723d-4621-bb57-33dccb62786e.local.
+# We don't want such names to claim PTR records that a human-readable
+# hostname would otherwise own. Forward records are still allowed (so the
+# UUID name resolves if anyone asks for it), but PTRs prefer the friendly
+# name when both are observed for the same address.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def is_uuid_like(name: str) -> bool:
+    """
+    Return True if the given short hostname looks like a canonical UUID.
+
+    Used to deprioritise UUID-style host announcements for PTR ownership.
+    """
+    if not name:
+        return False
+    return bool(_UUID_RE.match(name))
+
+
 def addr_passes_filters(addr: str, cfg: Config) -> bool:
     """
     Apply per-family eligibility checks:
@@ -498,15 +536,25 @@ class HostState:
     Per-host runtime state, tracked per address family.
 
     `published_v4` and `published_v6` are the sets of addresses currently in
-    DNS (i.e. what we last successfully nsupdate'd into the zone). Tracking
-    them separately means the v4 and v6 reconciliations can succeed or fail
-    independently without confusing each other's "what's published?" state.
+    DNS as forward records (A / AAAA) under this host's owner name.
+
+    `published_ptr_v4` and `published_ptr_v6` are the sets of addresses for
+    which THIS host currently owns the PTR record. They are usually a subset
+    of the forward sets - a host always has a forward record for every
+    address it announces, but may not own the PTR if a higher-priority
+    (non-UUID) host claims it.
+
+    Tracking forward and PTR separately means cfg.prefer_named_ptrs can
+    correctly evict UUID-style PTRs when a friendly host claims the address,
+    and restore them when the friendly host disappears.
 
     `last_seen` tracks when we last received any mDNS announcement for this
     host (of either family), used to expire stale entries.
     """
     published_v4: Set[str] = field(default_factory=set)
     published_v6: Set[str] = field(default_factory=set)
+    published_ptr_v4: Set[str] = field(default_factory=set)
+    published_ptr_v6: Set[str] = field(default_factory=set)
     last_seen: float = 0.0
 
     def published_for(self, family: str) -> Set[str]:
@@ -556,9 +604,16 @@ class State:
                         v4.add(a)
                     elif isinstance(ip, IPv6Address):
                         v6.add(a)
+            # PTR-owned sets are new in the prefer_named_ptrs feature. Old
+            # state files won't have them; default to the forward sets
+            # (legacy behaviour: every published forward also had a PTR).
+            ptr_v4 = set(entry.get("published_ptr_v4", v4))
+            ptr_v6 = set(entry.get("published_ptr_v6", v6))
             self.hosts[host] = HostState(
                 published_v4=v4,
                 published_v6=v6,
+                published_ptr_v4=ptr_v4,
+                published_ptr_v6=ptr_v6,
                 last_seen=float(entry.get("last_seen", 0.0)),
             )
 
@@ -570,6 +625,8 @@ class State:
                 h: {
                     "published_v4": sorted(s.published_v4),
                     "published_v6": sorted(s.published_v6),
+                    "published_ptr_v4": sorted(s.published_ptr_v4),
+                    "published_ptr_v6": sorted(s.published_ptr_v6),
                     "last_seen": s.last_seen,
                 }
                 for h, s in self.hosts.items()
@@ -588,6 +645,24 @@ class State:
             tmp = tf.name
         os.replace(tmp, self.path)
 
+    def ptr_owner_of(self, addr: str, except_host: Optional[str] = None) -> Optional[str]:
+        """
+        Return the short hostname that currently owns the PTR for the given
+        address, or None if no host owns it.
+
+        If except_host is given, that host is excluded from the search - useful
+        when a host is reconciling against its own past state and we want to
+        check "does any OTHER host own this PTR?"
+
+        Caller must hold self.lock.
+        """
+        for h, s in self.hosts.items():
+            if h == except_host:
+                continue
+            if addr in s.published_ptr_v6 or addr in s.published_ptr_v4:
+                return h
+        return None
+
 
 # ------------------------ nsupdate ------------------------ #
 
@@ -599,6 +674,10 @@ def build_nsupdate_script(
     prev_v6: Set[str],
     current_v4: Optional[Set[str]] = None,
     prev_v4: Optional[Set[str]] = None,
+    ptr_current_v6: Optional[Set[str]] = None,
+    ptr_prev_v6: Optional[Set[str]] = None,
+    ptr_current_v4: Optional[Set[str]] = None,
+    ptr_prev_v4: Optional[Set[str]] = None,
 ) -> str:
     """
     Build an nsupdate script that brings DNS into the state described by
@@ -616,6 +695,14 @@ def build_nsupdate_script(
       - A: delete-all-then-readd (only if publish_v4 is true), plus per-address
         PTR diff against the configured v4 reverse zones.
 
+    PTR ownership is tracked separately from forward records. A host may have
+    a forward record (AAAA/A) for an address but NOT own its PTR - this
+    happens when prefer_named_ptrs is enabled and a UUID-style host's
+    address is also owned by a friendly host. Callers pass ptr_current_v6
+    / ptr_prev_v6 etc. to express the PTR ownership separately; when these
+    are None, they default to current_v6 / prev_v6 (legacy behaviour: every
+    forward record also gets a PTR).
+
     Each family's forward delete/add happens in its own nsupdate send-block.
     Reverse blocks are grouped per zone.
 
@@ -629,6 +716,17 @@ def build_nsupdate_script(
         current_v4 = set()
     if prev_v4 is None:
         prev_v4 = set()
+
+    # Default the PTR sets to mirror the forward sets - legacy behaviour for
+    # callers that don't distinguish PTR ownership from forward ownership.
+    if ptr_current_v6 is None:
+        ptr_current_v6 = current_v6
+    if ptr_prev_v6 is None:
+        ptr_prev_v6 = prev_v6
+    if ptr_current_v4 is None:
+        ptr_current_v4 = current_v4
+    if ptr_prev_v4 is None:
+        ptr_prev_v4 = prev_v4
 
     def _forward_block(rtype: str, current: Iterable[str], prev: Set[str]) -> None:
         """
@@ -702,10 +800,12 @@ def build_nsupdate_script(
         _forward_block("A", current_v4, prev_v4)
 
     # ---- Reverse: collect all PTR ops, then emit grouped by zone ----
+    # Use the PTR-specific sets, which may differ from the forward sets when
+    # this host doesn't own the PTR for one of its forward addresses.
     rev_ops: Dict[str, List[str]] = {}
-    _reverse_ops("v6", current_v6, prev_v6, rev_ops)
+    _reverse_ops("v6", ptr_current_v6, ptr_prev_v6, rev_ops)
     if cfg.publish_v4:
-        _reverse_ops("v4", current_v4, prev_v4, rev_ops)
+        _reverse_ops("v4", ptr_current_v4, ptr_prev_v4, rev_ops)
 
     for _zn, ops in rev_ops.items():
         if not ops:
@@ -886,6 +986,14 @@ class Agent:
         cache while its AAAA is still live - that gap is normal and not a
         signal that the host has removed an address. Without this guard, the
         agent would tear down A records every few minutes for healthy hosts.
+
+        PTR ownership (when cfg.prefer_named_ptrs is on): if this host's
+        short name looks like a canonical UUID, it can only own a PTR for an
+        address that no other host already claims. A friendly (non-UUID)
+        host always wins, and its reconcile evicts any UUID PTR for the same
+        address. This keeps the zone's PTRs pointing at the names humans
+        actually want to see while still publishing forward records for
+        every announced name.
         """
         if self.cfg.allowed_hosts is not None and short not in self.cfg.allowed_hosts:
             log.debug("ignoring %s (not in allowed_hosts)", short)
@@ -910,6 +1018,8 @@ class Agent:
             hs = self.state.hosts.setdefault(short, HostState())
             prev_v6 = set(hs.published_v6)
             prev_v4 = set(hs.published_v4)
+            prev_ptr_v6 = set(hs.published_ptr_v6)
+            prev_ptr_v4 = set(hs.published_ptr_v4)
             hs.last_seen = time.time()
 
         # Per-family transient-empty protection: if this family had records
@@ -923,10 +1033,58 @@ class Agent:
         if effective_v4 is prev_v4 and prev_v4:
             log.debug("%s: v4 cache transiently empty, keeping prev=%s", short, sorted(prev_v4))
 
+        # Decide which addresses this host should own PTRs for.
+        # - Friendly hosts: claim every address they publish, displacing any
+        #   UUID-host PTR that previously held it.
+        # - UUID hosts: only claim addresses no other host currently owns.
+        is_uuid = self.cfg.prefer_named_ptrs and is_uuid_like(short)
+        displaced_uuid_hosts: Set[str] = set()
+        if is_uuid:
+            ptr_target_v6: Set[str] = set()
+            ptr_target_v4: Set[str] = set()
+            with self.state.lock:
+                for a in effective_v6:
+                    owner = self.state.ptr_owner_of(a, except_host=short)
+                    if owner is None:
+                        ptr_target_v6.add(a)
+                    else:
+                        log.debug(
+                            "%s: not claiming PTR for %s, owned by %s",
+                            short, a, owner,
+                        )
+                if self.cfg.publish_v4:
+                    for a in effective_v4:
+                        owner = self.state.ptr_owner_of(a, except_host=short)
+                        if owner is None:
+                            ptr_target_v4.add(a)
+                        else:
+                            log.debug(
+                                "%s: not claiming PTR for %s (v4), owned by %s",
+                                short, a, owner,
+                            )
+        else:
+            # Friendly host: target PTRs for everything this host publishes.
+            # If another (UUID) host currently owns the PTR, that host's
+            # state needs updating so the next reconcile doesn't think it
+            # still owns it.
+            ptr_target_v6 = set(effective_v6)
+            ptr_target_v4 = set(effective_v4) if self.cfg.publish_v4 else set()
+            with self.state.lock:
+                for a in ptr_target_v6 | ptr_target_v4:
+                    owner = self.state.ptr_owner_of(a, except_host=short)
+                    if owner is not None:
+                        displaced_uuid_hosts.add(owner)
+                        log.info(
+                            "%s: evicting PTR for %s from %s",
+                            short, a, owner,
+                        )
+
         script = build_nsupdate_script(
             short, self.cfg,
             current_v6=effective_v6, prev_v6=prev_v6,
             current_v4=effective_v4, prev_v4=prev_v4,
+            ptr_current_v6=ptr_target_v6, ptr_prev_v6=prev_ptr_v6,
+            ptr_current_v4=ptr_target_v4, ptr_prev_v4=prev_ptr_v4,
         )
         if not script:
             log.debug("%s: no change", short)
@@ -957,11 +1115,27 @@ class Agent:
                 hs.published_v6 = {
                     a for a in effective_v6 if addr_passes_filters(a, self.cfg)
                 }
+                hs.published_ptr_v6 = {
+                    a for a in ptr_target_v6 if addr_passes_filters(a, self.cfg)
+                }
                 if self.cfg.publish_v4:
                     hs.published_v4 = {
                         a for a in effective_v4 if addr_passes_filters(a, self.cfg)
                     }
+                    hs.published_ptr_v4 = {
+                        a for a in ptr_target_v4 if addr_passes_filters(a, self.cfg)
+                    }
                 hs.last_seen = time.time()
+                # If this reconcile displaced any UUID host's PTRs, update
+                # those hosts' state so they no longer claim ownership.
+                # Their forward records (AAAA/A) under their UUID name are
+                # untouched and stay in DNS.
+                for victim in displaced_uuid_hosts:
+                    vs = self.state.hosts.get(victim)
+                    if vs is None:
+                        continue
+                    vs.published_ptr_v6 = vs.published_ptr_v6 - ptr_target_v6
+                    vs.published_ptr_v4 = vs.published_ptr_v4 - ptr_target_v4
             if not self.preview:
                 self.state.save()
 
@@ -1034,6 +1208,11 @@ class Agent:
         seconds. Catches sleeping laptops and devices that disappear without
         sending mDNS goodbye packets. Both v4 and v6 records are removed
         together since "host is gone" applies to both families.
+
+        When a host that owned PTRs disappears, the addresses become eligible
+        for a UUID-style host to claim. We re-enqueue any UUID host that has
+        an active forward record overlapping a freed address, so its next
+        reconcile can publish PTRs that were previously suppressed.
         """
         stale: List[str] = []
         with self.state.lock:
@@ -1047,6 +1226,8 @@ class Agent:
             with self.state.lock:
                 prev_v6 = set(self.state.hosts[short].published_v6)
                 prev_v4 = set(self.state.hosts[short].published_v4)
+                prev_ptr_v6 = set(self.state.hosts[short].published_ptr_v6)
+                prev_ptr_v4 = set(self.state.hosts[short].published_ptr_v4)
                 age = now - self.state.hosts[short].last_seen
             log.info("%s: timed out, removing records (last_seen %.0fs ago)",
                      short, age)
@@ -1054,6 +1235,8 @@ class Agent:
                 short, self.cfg,
                 current_v6=set(), prev_v6=prev_v6,
                 current_v4=set(), prev_v4=prev_v4,
+                ptr_current_v6=set(), ptr_prev_v6=prev_ptr_v6,
+                ptr_current_v4=set(), ptr_prev_v4=prev_ptr_v4,
             )
             if script and run_nsupdate(script, self.cfg, self.preview):
                 # Clear in-memory state regardless of preview mode so a
@@ -1062,8 +1245,28 @@ class Agent:
                 with self.state.lock:
                     self.state.hosts[short].published_v6 = set()
                     self.state.hosts[short].published_v4 = set()
+                    self.state.hosts[short].published_ptr_v6 = set()
+                    self.state.hosts[short].published_ptr_v4 = set()
                 if not self.preview:
                     self.state.save()
+
+                # Re-enqueue any UUID-style host that has a forward record
+                # for one of the freed addresses, so it can now claim the
+                # newly-vacant PTR.
+                freed = prev_ptr_v6 | prev_ptr_v4
+                if freed and self.cfg.prefer_named_ptrs:
+                    with self.state.lock:
+                        candidates = [
+                            h for h, hs in self.state.hosts.items()
+                            if is_uuid_like(h)
+                            and (hs.published_v6 & freed or hs.published_v4 & freed)
+                        ]
+                    for c in candidates:
+                        log.debug("%s freed PTRs for %s, re-enqueueing %s",
+                                  short, sorted(freed), c)
+                        # We need full_name to enqueue. UUID hosts announce
+                        # under their short.local; reconstruct.
+                        self.enqueue_host(c, f"{c}.local.")
 
     # ---- lifecycle ----
 

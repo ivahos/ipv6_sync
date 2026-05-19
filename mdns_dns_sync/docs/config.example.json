@@ -43,6 +43,9 @@
   "_comment_allowed_hosts": "Optional allowlist of short hostnames (without .local). When present, announcements from other hosts on the link are ignored. When absent/null, all announcements on the link are accepted. Use null on trusted management VLANs; use a list on VLANs that may carry guest/IoT devices.",
   "allowed_hosts": null,
 
+  "_comment_prefer_named_ptrs": "When true (default), hosts whose short name looks like a canonical UUID (8-4-4-4-12 hex, e.g. dd533fcf-723d-4621-bb57-33dccb62786e) won't claim PTR records that another host already published. Friendly hostnames always win for PTRs; forward records (AAAA/A) are still published under both names so resolution works either way. Common with HomePods and other Apple devices that announce themselves under both their friendly name and an internal UUID.",
+  "prefer_named_ptrs": true,
+
   "_comment_host_timeout": "Seconds. If a host hasn't announced anything for this long, its records (v4 and v6) are removed. Catches sleeping laptops that don't send mDNS goodbye packets.",
   "host_timeout": 3600,
 
