@@ -1,0 +1,36 @@
+{
+  "_comment": "Example config for mdns_dns_sync. One file per agent instance (per VLAN). Strip _comment fields before deploying.",
+
+  "_comment_interface": "IPv4 or IPv6 address of the local interface this agent will listen on. zeroconf scopes its multicast group membership to this interface only.",
+  "interface": "192.0.2.10",
+
+  "_comment_server": "DNS server (BIND) that accepts dynamic updates with the TSIG key below.",
+  "server": "192.0.2.53",
+
+  "_comment_keyfile": "BIND-format TSIG keyfile, passed to nsupdate -k. Same format as ipv6_dns_sync's .mykey: key \"name\" { algorithm hmac-sha256; secret \"...\"; };",
+  "keyfile": "/etc/mdns_dns_sync/mdns-vlan10.key",
+
+  "_comment_domain": "Forward zone to update. mDNS names ending in .local are rewritten by replacing .local with this domain.",
+  "domain": "wireguard.au",
+
+  "ttl": 120,
+
+  "_comment_reverse_zones": "IPv6 CIDRs the agent is authoritative for. PTRs are only written for addresses inside one of these. The reverse zone name is derived from each CIDR (must be nibble-aligned, which BIND delegations always are).",
+  "reverse_zones": [
+    "2001:db8:10::/64"
+  ],
+
+  "_comment_filters": "Optional. Only publish addresses starting with one of include_prefixes (if set), and skip any starting with exclude_prefixes.",
+  "include_prefixes": [
+    "2001:db8:10:"
+  ],
+  "exclude_prefixes": [],
+
+  "_comment_allowed_hosts": "Optional allowlist of short hostnames (without .local). When present, announcements from other hosts on the link are ignored. When absent/null, all announcements on the link are accepted. Use null on trusted management VLANs; use a list on VLANs that may carry guest/IoT devices.",
+  "allowed_hosts": null,
+
+  "_comment_host_timeout": "Seconds. If a host hasn't announced anything for this long, its AAAA/PTR records are removed. Catches sleeping laptops that don't send mDNS goodbye packets.",
+  "host_timeout": 3600,
+
+  "state_file": "/var/cache/mdns_dns_sync/state.json"
+}

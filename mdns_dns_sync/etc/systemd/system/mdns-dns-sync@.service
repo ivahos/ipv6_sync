@@ -1,0 +1,39 @@
+[Unit]
+Description=mDNS-to-DNS sync agent (%i)
+Documentation=https://github.com/ivahos/ipv6_sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Instance name %i selects which config file to use. Example:
+#   systemctl enable --now mdns-dns-sync@vlan10
+# loads /etc/mdns_dns_sync/vlan10.json
+ExecStart=/usr/local/bin/mdns_dns_sync.py --config /etc/mdns_dns_sync/%i.json
+ExecStop=/usr/local/bin/mdns_dns_sync.py --config /etc/mdns_dns_sync/%i.json --shutdown
+Restart=on-failure
+RestartSec=5s
+
+# We log to stderr; systemd captures it to journald.
+StandardOutput=journal
+StandardError=journal
+
+# Hardening - the agent only needs to:
+#   - open sockets (multicast group memberships)
+#   - read its config file and TSIG keyfile
+#   - write its state file
+#   - exec /usr/sbin/nsupdate
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/cache/mdns_dns_sync
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
