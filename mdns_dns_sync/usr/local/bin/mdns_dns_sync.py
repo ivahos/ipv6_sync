@@ -873,6 +873,19 @@ class Agent:
         Look up the host's currently-announced A and AAAA addresses (from the
         zeroconf cache), compute the per-family diff against last-published
         state, and run nsupdate if needed.
+
+        Empty-cache protection (per family): if zeroconf's cache reports zero
+        addresses for a family but we previously published some, treat that as
+        a transient TTL gap rather than a real removal. We keep the previously
+        published set in memory and let sweep_stale() do the cleanup if the
+        host genuinely stays silent for host_timeout seconds.
+
+        The reason: Avahi (and other mDNS responders) re-announce at intervals
+        well shorter than the record TTL, but record updates arrive packet by
+        packet. A host can briefly have, say, its A record expired in the
+        cache while its AAAA is still live - that gap is normal and not a
+        signal that the host has removed an address. Without this guard, the
+        agent would tear down A records every few minutes for healthy hosts.
         """
         if self.cfg.allowed_hosts is not None and short not in self.cfg.allowed_hosts:
             log.debug("ignoring %s (not in allowed_hosts)", short)
@@ -886,13 +899,10 @@ class Agent:
 
         if not announced_v6 and not announced_v4:
             # Host has nothing usable in the cache right now. Could be a TTL
-            # expiry, or the host only announced something we filtered out.
-            # Don't tear down records yet - sweep_stale() will remove them
-            # if the host stays silent for host_timeout seconds. This avoids
-            # flapping on TTL boundaries between announcements.
+            # expiry across both families simultaneously, or the host only
+            # announced something we filtered out. Don't tear down records;
+            # sweep_stale() will handle a genuinely departed host.
             log.debug("%s: nothing to publish at this moment, skipping", short)
-            # Still update last_seen so the sweep doesn't expire a host that
-            # is actively announcing records we just don't accept.
             self._touch(short)
             return
 
@@ -902,10 +912,21 @@ class Agent:
             prev_v4 = set(hs.published_v4)
             hs.last_seen = time.time()
 
+        # Per-family transient-empty protection: if this family had records
+        # before and the cache currently shows zero, treat it as a TTL gap
+        # and pretend nothing changed for this family. The other family can
+        # still reconcile if it has real news to report.
+        effective_v6 = announced_v6 if announced_v6 or not prev_v6 else prev_v6
+        effective_v4 = announced_v4 if announced_v4 or not prev_v4 else prev_v4
+        if effective_v6 is prev_v6 and prev_v6:
+            log.debug("%s: v6 cache transiently empty, keeping prev=%s", short, sorted(prev_v6))
+        if effective_v4 is prev_v4 and prev_v4:
+            log.debug("%s: v4 cache transiently empty, keeping prev=%s", short, sorted(prev_v4))
+
         script = build_nsupdate_script(
             short, self.cfg,
-            current_v6=announced_v6, prev_v6=prev_v6,
-            current_v4=announced_v4, prev_v4=prev_v4,
+            current_v6=effective_v6, prev_v6=prev_v6,
+            current_v4=effective_v4, prev_v4=prev_v4,
         )
         if not script:
             log.debug("%s: no change", short)
@@ -917,13 +938,13 @@ class Agent:
             log.info(
                 "%s: v6 prev=%s announced=%s | v4 prev=%s announced=%s",
                 short,
-                sorted(prev_v6), sorted(announced_v6),
-                sorted(prev_v4), sorted(announced_v4),
+                sorted(prev_v6), sorted(effective_v6),
+                sorted(prev_v4), sorted(effective_v4),
             )
         else:
             log.info(
                 "%s: prev=%s announced=%s",
-                short, sorted(prev_v6), sorted(announced_v6),
+                short, sorted(prev_v6), sorted(effective_v6),
             )
 
         if run_nsupdate(script, self.cfg, self.preview):
@@ -934,11 +955,11 @@ class Agent:
             with self.state.lock:
                 hs = self.state.hosts.setdefault(short, HostState())
                 hs.published_v6 = {
-                    a for a in announced_v6 if addr_passes_filters(a, self.cfg)
+                    a for a in effective_v6 if addr_passes_filters(a, self.cfg)
                 }
                 if self.cfg.publish_v4:
                     hs.published_v4 = {
-                        a for a in announced_v4 if addr_passes_filters(a, self.cfg)
+                        a for a in effective_v4 if addr_passes_filters(a, self.cfg)
                     }
                 hs.last_seen = time.time()
             if not self.preview:
