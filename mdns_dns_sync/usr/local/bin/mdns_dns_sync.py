@@ -134,13 +134,18 @@ Field semantics:
                        v4 subnet.
   exclude_prefixes_v4  Optional. IPv4 counterpart of exclude_prefixes.
   prefer_named_ptrs  Optional bool, default true. When a host announces
-                     under a UUID-style name (canonical 8-4-4-4-12 hex),
-                     it won't claim PTR records that another host has
-                     already published. Friendly (non-UUID) hosts always
-                     take priority for PTRs. Forward records (AAAA/A)
-                     are still published under both names so resolution
-                     works either way. Set to false to disable and treat
-                     UUID-named hosts the same as any other.
+                     under a "low-priority" name - either a UUID-style
+                     name (canonical 8-4-4-4-12 hex, as Apple HomePods
+                     do) or a Bonjour duplicate-rename suffix like
+                     'mercury-(2)' (as macOS does when a Mac has both
+                     Wi-Fi and Ethernet active and announces the same
+                     hostname twice) - it won't claim PTR records that
+                     another host has already published. Friendly base
+                     names always take priority for PTRs. Forward
+                     records (AAAA/A) are still published under all
+                     names so resolution works either way. Set to false
+                     to disable and treat low-priority hosts the same
+                     as any other.
   allowed_hosts   Optional list of short hostnames (without .local). If
                   present, announcements from other hosts are ignored.
                   null/missing = accept everything on the link.
@@ -470,6 +475,41 @@ def is_uuid_like(name: str) -> bool:
     if not name:
         return False
     return bool(_UUID_RE.match(name))
+
+
+# Apple Bonjour's duplicate-name resolution. When a host has multiple
+# interfaces both publishing the same .local name, the second responder
+# auto-renames itself to "<name> (2).local", then "(3)", etc. (RFC 6762
+# section 9). The space typically appears as "-(2)" in the agent's
+# normalisation. Common case: a Mac with both Wi-Fi and Ethernet active,
+# announcing under both 'mercury' and 'mercury-(2)'.
+#
+# Both names legitimately point at the same host's overlapping address
+# sets, but for PTR purposes we want a deterministic winner. The base name
+# (without the suffix) wins; the suffixed variant gets forward records but
+# can't claim PTRs against any other host.
+_BONJOUR_RENAME_RE = re.compile(r"^(.+)-\([0-9]+\)$")
+
+
+def is_bonjour_rename(name: str) -> bool:
+    """
+    Return True if the given short hostname looks like a Bonjour-renamed
+    duplicate (e.g. 'mercury-(2)'). Used to deprioritise these for PTR
+    ownership in favour of the base name.
+    """
+    if not name:
+        return False
+    return bool(_BONJOUR_RENAME_RE.match(name))
+
+
+def is_low_priority_owner(name: str) -> bool:
+    """
+    Return True if the host's name shouldn't take PTR ownership from
+    another host when there's a conflict. Combines UUID-style names and
+    Bonjour-renamed duplicates - both represent the same underlying host
+    as some other (better) name we'd prefer to use.
+    """
+    return is_uuid_like(name) or is_bonjour_rename(name)
 
 
 def addr_passes_filters(addr: str, cfg: Config) -> bool:
@@ -988,12 +1028,14 @@ class Agent:
         agent would tear down A records every few minutes for healthy hosts.
 
         PTR ownership (when cfg.prefer_named_ptrs is on): if this host's
-        short name looks like a canonical UUID, it can only own a PTR for an
-        address that no other host already claims. A friendly (non-UUID)
-        host always wins, and its reconcile evicts any UUID PTR for the same
-        address. This keeps the zone's PTRs pointing at the names humans
-        actually want to see while still publishing forward records for
-        every announced name.
+        short name looks like a "low-priority" name - a canonical UUID
+        (e.g. dd533fcf-...) or a Bonjour duplicate-rename like
+        'mercury-(2)' - it can only own a PTR for an address that no other
+        host already claims. A friendly base name always wins, and its
+        reconcile evicts any low-priority PTR for the same address. This
+        keeps the zone's PTRs pointing at the names humans actually want
+        to see while still publishing forward records for every announced
+        name.
         """
         if self.cfg.allowed_hosts is not None and short not in self.cfg.allowed_hosts:
             log.debug("ignoring %s (not in allowed_hosts)", short)
@@ -1034,12 +1076,14 @@ class Agent:
             log.debug("%s: v4 cache transiently empty, keeping prev=%s", short, sorted(prev_v4))
 
         # Decide which addresses this host should own PTRs for.
-        # - Friendly hosts: claim every address they publish, displacing any
-        #   UUID-host PTR that previously held it.
-        # - UUID hosts: only claim addresses no other host currently owns.
-        is_uuid = self.cfg.prefer_named_ptrs and is_uuid_like(short)
+        # - Friendly hosts (base names): claim every address they publish,
+        #   displacing any low-priority host that previously held it.
+        # - Low-priority hosts (UUID-style names, Bonjour-renamed duplicates
+        #   like 'mercury-(2)'): only claim addresses no other host currently
+        #   owns. The base name wins.
+        is_low_priority = self.cfg.prefer_named_ptrs and is_low_priority_owner(short)
         displaced_uuid_hosts: Set[str] = set()
-        if is_uuid:
+        if is_low_priority:
             ptr_target_v6: Set[str] = set()
             ptr_target_v4: Set[str] = set()
             with self.state.lock:
@@ -1250,22 +1294,23 @@ class Agent:
                 if not self.preview:
                     self.state.save()
 
-                # Re-enqueue any UUID-style host that has a forward record
-                # for one of the freed addresses, so it can now claim the
-                # newly-vacant PTR.
+                # Re-enqueue any low-priority host (UUID-style or Bonjour-
+                # renamed duplicate) that has a forward record for one of
+                # the freed addresses, so it can now claim the newly-vacant
+                # PTR.
                 freed = prev_ptr_v6 | prev_ptr_v4
                 if freed and self.cfg.prefer_named_ptrs:
                     with self.state.lock:
                         candidates = [
                             h for h, hs in self.state.hosts.items()
-                            if is_uuid_like(h)
+                            if is_low_priority_owner(h)
                             and (hs.published_v6 & freed or hs.published_v4 & freed)
                         ]
                     for c in candidates:
                         log.debug("%s freed PTRs for %s, re-enqueueing %s",
                                   short, sorted(freed), c)
-                        # We need full_name to enqueue. UUID hosts announce
-                        # under their short.local; reconstruct.
+                        # We need full_name to enqueue. The agent stores
+                        # short names; reconstruct the .local form.
                         self.enqueue_host(c, f"{c}.local.")
 
     # ---- lifecycle ----
